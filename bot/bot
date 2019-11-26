@@ -53,11 +53,18 @@ class STATE:
     WAIT_FOR_TEXT = 0
 
 
+class Emoji:
+    BOAR = '\U0001F417'
+    TOILET = '\U0001F6BD'
+    PLUS = '\U00002795'
+    MINUS = '\U00002796'
+
+
 class OPTION(Enum):
-    ME_TOO = ('me_too', '+')
-    ME_NOT = ('me_not', '-')
-    PLUS_ONE = ('plus_one', 'человечек подскочит')
-    MINUS_ONE = ('minus_one', 'человечек слился')
+    ME_TOO = ('me_too', f'{Emoji.PLUS}')
+    ME_NOT = ('me_not', f'{Emoji.MINUS}')
+    PLUS_ONE = ('plus_one', f'{Emoji.BOAR} человечек подскочит')
+    MINUS_ONE = ('minus_one', f'{Emoji.TOILET} человечек слился')
 
     def __init__(self, option_id: str, text: str):
         self._option_id = option_id
@@ -211,7 +218,7 @@ class Storage:
             ''')
 
     def insert_poll(self, poll: Poll) -> PollId:
-        log.info('Saving poll %s', poll)
+        log.info(f'Saving poll {poll}')
         cursor = self._db.cursor()
         cursor.execute(f'''
             INSERT INTO polls (text) values ('{poll.text}');
@@ -220,7 +227,7 @@ class Storage:
         return cursor.lastrowid
 
     def select_poll(self, poll_id: PollId) -> PollExt:
-        log.info('Selecting poll with id %s', poll_id)
+        log.info(f'Selecting poll with id {poll_id}')
         cursor = self._db.cursor()
         cursor.execute(f'SELECT text FROM polls WHERE id = {poll_id}')
         text = cursor.fetchone()[0]
@@ -230,7 +237,7 @@ class Storage:
         return PollExt(poll_id=poll_id, votes_pro=votes_pro, votes_cons=votes_cons, text=text)
 
     def insert_message(self, poll: PollId, message_id: MessageId):
-        log.info('saving message %s for poll %s', message_id, poll)
+        log.info(f'saving message {message_id} for poll {poll}')
         self._db.execute(f'''
             INSERT OR REPLACE INTO messages(poll_id, chat_id, msg_id, inline_message_id)
             VALUES (?, ?, ?, ?)''', [poll, message_id.chat_id, message_id.message_id, message_id.inline_message_id])
@@ -272,7 +279,7 @@ class Storage:
                 );
                 ''')
         else:
-            log.error('Unknown option: %s. poll: %s, user: %s', opt, poll_id, user)
+            log.error(f'Unknown option: {opt}. poll: {poll_id}, user: {user}', opt, poll_id, user)
             raise ValueError('Unknown option')
         self._db.commit()
 
@@ -332,14 +339,14 @@ def actualize_users(handler):
 
 @actualize_users
 def ask_text(update: Update, context: CallbackContext):
-    log.info('user %s started conversation', update.message.from_user)
+    log.info(f'user {update.effective_user} started conversation')
 
     update.message.reply_markdown('Введите текст *опроса*')
 
     return STATE.WAIT_FOR_TEXT
 
 
-def create_poll_markup(poll_id: PollId) -> InlineKeyboardMarkup:
+def build_poll_markup(poll_id: PollId) -> InlineKeyboardMarkup:
     log.info(f'Generating markup for poll {poll_id}')
 
     def button(opt: OPTION):
@@ -364,7 +371,7 @@ def generate_prefix(size: int):
     return
 
 
-def generate_text(poll: PollExt):
+def build_poll_text(poll: PollExt):
     log.info(f'Generating text for poll {poll}')
 
     def total_str(votes: List):
@@ -387,9 +394,9 @@ def send_saved_poll(bot: Bot, chat_id: int, poll_id: PollId):
     storage = Conf.storage()
     poll = storage.select_poll(poll_id=poll_id)
     sent_message = bot.send_message(chat_id=chat_id,
-                                    text=generate_text(poll),
+                                    text=build_poll_text(poll),
                                     parse_mode=ParseMode.MARKDOWN,
-                                    reply_markup=create_poll_markup(poll.id))
+                                    reply_markup=build_poll_markup(poll.id))
     sent_message_id = MessageId(chat_id=sent_message.chat_id, message_id=sent_message.message_id)
     storage.insert_message(poll_id, sent_message_id)
 
@@ -403,9 +410,9 @@ def update_poll_messages(bot: Bot, poll_id: PollId):
             bot.edit_message_text(chat_id=msg.chat_id,
                                   message_id=msg.message_id,
                                   inline_message_id=msg.inline_message_id,
-                                  text=generate_text(poll),
+                                  text=build_poll_text(poll),
                                   parse_mode=ParseMode.MARKDOWN,
-                                  reply_markup=create_poll_markup(poll.id)
+                                  reply_markup=build_poll_markup(poll.id)
                                   )
         except Exception as e:
             log.error(f'Cannot edit: {e}')
@@ -430,7 +437,7 @@ def handle_vote(update: Update, context: CallbackContext):
 
     poll_id, option = parse_vote_data(query.data)
 
-    log.info('user %s vote for %s', poll_id, option)
+    log.info(f'user {update.effective_user} vote for {option} in poll {poll_id}')
 
     storage = Conf.storage()
 
@@ -453,10 +460,10 @@ def handle_inline_query(update: Update, context: CallbackContext):
                                 id=poll_id,
                                 title=poll_ext.text,
                                 input_message_content=InputTextMessageContent(
-                                    message_text=generate_text(poll_ext),
+                                    message_text=build_poll_text(poll_ext),
                                     parse_mode=ParseMode.MARKDOWN
                                 ),
-                                reply_markup=create_poll_markup(poll_ext.id)
+                                reply_markup=build_poll_markup(poll_ext.id)
                             )])
 
 
@@ -482,7 +489,8 @@ class Conf:
 
 
 def main():
-    logging.basicConfig(level=logging.DEBUG, style='{')
+    logging.basicConfig(level=logging.DEBUG,
+                        format='[%(asctime)s %(filename)s:%(lineno)d:%(funcName)s %(name)s] %(levelname)s: %(message)s')
 
     parser = ArgumentParser()
     parser.add_argument('--proxy', type=str)
