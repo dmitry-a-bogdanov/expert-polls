@@ -1,0 +1,522 @@
+#!/usr/bin/env python3
+
+import logging
+import sqlite3
+from argparse import ArgumentParser, FileType
+from enum import (Enum)
+from typing import *
+
+import telegram.utils
+import telegram.utils.request
+from telegram import *
+from telegram.ext import *
+
+log = logging.getLogger(__name__)
+
+
+PollId = int
+
+
+class MessageId:
+    def __init__(self, chat_id: int = None, message_id: int = None, inline_message_id: str = None):
+        inline = inline_message_id is not None
+        chat = (chat_id is not None) and (message_id is not None)
+        if inline == chat:
+            raise ValueError()
+        self._chat_id = chat_id
+        self._message_id = message_id
+        self._inline_message_id = inline_message_id
+
+    @property
+    def chat_id(self) -> int:
+        return self._chat_id
+
+    @property
+    def message_id(self) -> int:
+        return self._message_id
+
+    @property
+    def inline_message_id(self) -> str:
+        return self._inline_message_id
+
+    @property
+    def is_inline(self):
+        return self._inline_message_id is not None
+
+    def __str__(self):
+        return f'MessageId(chat={self._chat_id}, msg={self._message_id}, inline_message_id={self._inline_message_id})'
+
+    __repr__ = __str__
+
+
+class STATE:
+    WAIT_FOR_TEXT = 0
+
+
+class OPTION(Enum):
+    ME_TOO = ('me_too', '+')
+    ME_NOT = ('me_not', '-')
+    PLUS_ONE = ('plus_one', 'человечек подскочит')
+    MINUS_ONE = ('minus_one', 'человечек слился')
+
+    def __init__(self, option_id: str, text: str):
+        self._option_id = option_id
+        self._text = text
+
+    @property
+    def option_id(self):
+        return self._option_id
+
+    @property
+    def text(self):
+        return self._text
+
+    @classmethod
+    def from_string(cls, option_id: str):
+        for opt in cls:
+            if option_id == opt.option_id:
+                return opt
+        raise ValueError('not an option')
+
+
+class VoteType:
+    PRO = 1
+    CONS = 2
+    PLUS_ONE = 3
+
+
+class Vote:
+    def __init__(self, uid: int, name: str, vote_type: VoteType):
+        self._uid = uid
+        self._name = name
+        self._vote_type = vote_type
+
+    @property
+    def username(self):
+        return self._name
+
+    def is_pro(self):
+        return self._vote_type in (VoteType.PLUS_ONE, VoteType.PRO)
+
+    def format_user(self):
+        return f'[{self._name}](tg://user?id={self._uid})'
+
+    def show(self):
+        if self._vote_type == VoteType.PLUS_ONE:
+            return f'+1 (от {self.format_user()})'
+        else:
+            return self.format_user()
+
+    def __str__(self):
+        return f'Vote({self._vote_type}, {self._uid}, {self._name})'
+
+    __repr__ = __str__
+
+
+class Poll:
+    def __init__(self, text: str):
+        self._text = text
+
+    @property
+    def text(self) -> str:
+        return self._text
+
+
+class PollExt(Poll):
+    def __init__(self, poll_id: PollId, votes_pro: List[Vote], votes_cons: List[Vote], *args, **kwargs):
+        super(PollExt, self).__init__(*args, **kwargs)
+        self._id = poll_id
+        self._votes_pro = votes_pro
+        self._votes_cons = votes_cons
+
+    @property
+    def votes_pro(self) -> List[Vote]:
+        return self._votes_pro
+
+    @property
+    def votes_cons(self) -> List[Vote]:
+        return self._votes_cons
+
+    @property
+    def id(self) -> PollId:
+        return self._id
+
+    def __str__(self):
+        return f'PollExt(id={self.id}, text={self.text}, votes_pro={self.votes_pro}, votes_cons={self.votes_cons})'
+
+    __repr__ = __str__
+
+
+class Storage:
+    def __init__(self, connection: sqlite3.Connection):
+        self._data = dict()
+        self._seq = 0
+        self._db = connection
+
+        self._db.executescript('''
+            BEGIN TRANSACTION;
+            CREATE TABLE IF NOT EXISTS polls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                text TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS users (
+                uid INTEGER PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL,
+                is_admin INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT OR REPLACE
+                INTO users (uid, name, is_admin)
+                VALUES (160453507, 'Dmitry Bogdanov', 1);
+            CREATE TABLE IF NOT EXISTS own_votes (
+                poll_id INTEGER NOT NULL REFERENCES polls (id),
+                uid INTEGER NOT NULL REFERENCES users (uid),
+                vote_type INTEGER NOT NULL,
+                t TEXT,
+                PRIMARY KEY (poll_id, uid)
+            );
+            CREATE TABLE IF NOT EXISTS others_votes (
+                poll_id INTEGER NOT NULL REFERENCES polls (id),
+                uid INTEGER NOT NULL REFERENCES users (uid),
+                vote_type INTEGER NOT NULL,
+                t TEXT
+            );
+            CREATE TABLE IF NOT EXISTS messages (
+                poll_id INTEGER NOT NULL REFERENCES polls (id),
+                chat_id INTEGER,
+                msg_id INTEGER,
+                inline_message_id INTEGER
+            );
+            CREATE TRIGGER IF NOT EXISTS update_own_votes_datetime
+                AFTER UPDATE ON own_votes
+                BEGIN
+                    UPDATE own_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now')
+                    WHERE rowid = NEW.rowid and OLD.vote_type != NEW.vote_type;
+                END;
+            CREATE TRIGGER IF NOT EXISTS update_others_votes_datetime
+                AFTER UPDATE ON others_votes
+                BEGIN
+                    UPDATE others_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE rowid = NEW.rowid;
+                END;
+            CREATE TRIGGER IF NOT EXISTS insert_own_votes_datetime
+                AFTER INSERT ON own_votes
+                BEGIN
+                    UPDATE own_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE rowid = NEW.rowid;
+                END;
+            CREATE TRIGGER IF NOT EXISTS insert_others_votes_datetime
+                AFTER INSERT ON others_votes
+                BEGIN
+                    UPDATE others_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE rowid = NEW.rowid;
+                END;
+            COMMIT TRANSACTION;
+            ''')
+
+    def insert_poll(self, poll: Poll) -> PollId:
+        log.info('Saving poll %s', poll)
+        cursor = self._db.cursor()
+        cursor.execute(f'''
+            INSERT INTO polls (text) values ('{poll.text}');
+        ''')
+        cursor.connection.commit()
+        return cursor.lastrowid
+
+    def select_poll(self, poll_id: PollId) -> PollExt:
+        log.info('Selecting poll with id %s', poll_id)
+        cursor = self._db.cursor()
+        cursor.execute(f'SELECT text FROM polls WHERE id = {poll_id}')
+        text = cursor.fetchone()[0]
+        votes = self.select_votes(poll_id)
+        votes_pro = list(filter(lambda x: x.is_pro(), votes))
+        votes_cons = list(filter(lambda x: not x.is_pro(), votes))
+        return PollExt(poll_id=poll_id, votes_pro=votes_pro, votes_cons=votes_cons, text=text)
+
+    def insert_message(self, poll: PollId, message_id: MessageId):
+        log.info('saving message %s for poll %s', message_id, poll)
+        self._db.execute(f'''
+            INSERT OR REPLACE INTO messages(poll_id, chat_id, msg_id, inline_message_id)
+            VALUES (?, ?, ?, ?)''', [poll, message_id.chat_id, message_id.message_id, message_id.inline_message_id])
+        self._db.commit()
+
+    def select_messages(self, poll_id: PollId) -> List[MessageId]:
+        log.info(f'selecting messages for poll with id {poll_id}')
+        c = self._db.cursor()
+        c.execute(f'SELECT chat_id, msg_id, inline_message_id FROM messages WHERE poll_id = {poll_id}')
+        return list(map(lambda x: MessageId(chat_id=x[0], message_id=x[1], inline_message_id=x[2]), c.fetchall()))
+
+    def save_user(self, uid: int, name: str):
+        log.info(f'saving user {name} (uid={uid})')
+        c = self._db.cursor()
+        c.execute('BEGIN')
+        c.execute(f'''
+            INSERT OR REPLACE INTO users (uid, name)
+            VALUES ({uid}, {name})
+        ''')
+        self._db.commit()
+
+    def vote(self, poll_id: PollId, user: User, opt: OPTION):
+        uid = user.id
+        self._db.execute('BEGIN TRANSACTION;')
+        if opt == OPTION.ME_TOO:
+            self.__insert_own_vote_in_tx(poll_id, uid, VoteType.PRO)
+        elif opt == OPTION.ME_NOT:
+            self.__insert_own_vote_in_tx(poll_id, uid, VoteType.CONS)
+        elif opt == OPTION.PLUS_ONE:
+            self._db.execute(f'''
+                INSERT INTO others_votes (poll_id, uid, vote_type)
+                VALUES ({poll_id}, {uid}, {VoteType.PLUS_ONE});
+            ''')
+        elif opt == OPTION.MINUS_ONE:
+            self._db.executescript(f'''
+                DELETE FROM others_votes WHERE rowid = (
+                        SELECT MAX(rowid) FROM others_votes
+                        WHERE poll_id = {poll_id} AND uid = {uid}
+                );
+                ''')
+        else:
+            log.error('Unknown option: %s. poll: %s, user: %s', opt, poll_id, user)
+            raise ValueError('Unknown option')
+        self._db.commit()
+
+    def __insert_own_vote_in_tx(self, poll_id: PollId, uid: int, vote_type: VoteType):
+        self._db.execute(f'''
+            INSERT OR IGNORE INTO own_votes (poll_id, uid, vote_type)
+            VALUES ({poll_id}, {uid}, {vote_type});
+            ''')
+        self._db.execute(f'''
+            UPDATE own_votes
+            SET vote_type = {vote_type}
+            WHERE poll_id = {poll_id} AND uid = {uid}
+            ''')
+
+    def select_votes(self, poll_id: PollId) -> List[Vote]:
+        c = self._db.cursor()
+        c.execute(f'''
+            SELECT vote_type, uid, name FROM (
+                SELECT vote_type, users.uid as uid, name, t
+                    FROM own_votes
+                    JOIN users ON own_votes.uid = users.uid
+                    WHERE poll_id = {poll_id}
+                UNION ALL
+                SELECT vote_type, users.uid as uid, name, t
+                    FROM others_votes
+                    JOIN users ON others_votes.uid = users.uid
+                    WHERE poll_id = {poll_id}
+            ) ORDER BY t
+        ''')
+        votes = []
+        for row in c.fetchall():
+            vote_type = row[0]
+            uid = row[1]
+            name = row[2]
+            votes.append(Vote(uid=uid, name=name, vote_type=vote_type))
+        return votes
+
+    def upsert_user(self, user: User):
+        self._db.execute(f'''
+            INSERT INTO users (uid, name)
+            VALUES ({user.id}, '{user.full_name}')
+            ON CONFLICT(uid) DO
+                UPDATE
+                SET name = '{user.full_name}'
+                WHERE uid = '{user.id}'
+        ''')
+        self._db.commit()
+
+
+def actualize_users(handler):
+    def wrapped(update: Update, context: CallbackContext):
+        storage = Conf.storage()
+        storage.upsert_user(update.effective_user)
+        return handler(update, context)
+    return wrapped
+
+
+@actualize_users
+def ask_text(update: Update, context: CallbackContext):
+    log.info('user %s started conversation', update.message.from_user)
+
+    update.message.reply_markdown('Введите текст *опроса*')
+
+    return STATE.WAIT_FOR_TEXT
+
+
+def create_poll_markup(poll_id: PollId) -> InlineKeyboardMarkup:
+    log.info(f'Generating markup for poll {poll_id}')
+
+    def button(opt: OPTION):
+        return InlineKeyboardButton(text=opt.text, callback_data=(poll_id + ':' + opt.option_id))
+
+    poll_id = str(poll_id)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [button(OPTION.ME_TOO), button(OPTION.ME_NOT)],
+        [button(OPTION.PLUS_ONE)], [button(OPTION.MINUS_ONE)],
+        [InlineKeyboardButton(text='Share', switch_inline_query=poll_id)]
+    ])
+
+
+def generate_prefix(size: int):
+    yielded = 0
+    if yielded == size:
+        return
+    without_last = size - 1
+    for i in range(without_last):
+        yield '├'
+    yield '└'
+    return
+
+
+def generate_text(poll: PollExt):
+    log.info(f'Generating text for poll {poll}')
+
+    def total_str(votes: List):
+        n = len(votes)
+        return f'({n})' if n > 0 else ''
+
+    text = str(poll.text)
+    text += '\n\n'
+    text += f'`+ `{total_str(poll.votes_pro)}\n'
+    for prefix, vote in zip(generate_prefix(len(poll.votes_pro)), poll.votes_pro):
+        text += '`{}` {}\n'.format(prefix, vote.show())
+    text += '\n`-`\n'
+    for prefix, vote in zip(generate_prefix(len(poll.votes_cons)), poll.votes_cons):
+        text += '`{}` {}\n'.format(prefix, vote.show())
+    text += '\n'
+    return text
+
+
+def send_saved_poll(bot: Bot, chat_id: int, poll_id: PollId):
+    storage = Conf.storage()
+    poll = storage.select_poll(poll_id=poll_id)
+    sent_message = bot.send_message(chat_id=chat_id,
+                                    text=generate_text(poll),
+                                    parse_mode=ParseMode.MARKDOWN,
+                                    reply_markup=create_poll_markup(poll.id))
+    sent_message_id = MessageId(chat_id=sent_message.chat_id, message_id=sent_message.message_id)
+    storage.insert_message(poll_id, sent_message_id)
+
+
+def update_poll_messages(bot: Bot, poll_id: PollId):
+    storage = Conf.storage()
+    messages = storage.select_messages(poll_id)
+    poll = storage.select_poll(poll_id)
+    for msg in messages:
+        try:
+            bot.edit_message_text(chat_id=msg.chat_id,
+                                  message_id=msg.message_id,
+                                  inline_message_id=msg.inline_message_id,
+                                  text=generate_text(poll),
+                                  parse_mode=ParseMode.MARKDOWN,
+                                  reply_markup=create_poll_markup(poll.id)
+                                  )
+        except Exception as e:
+            log.error(f'Cannot edit: {e}')
+
+
+@actualize_users
+def handle_text(update: Update, context: CallbackContext):
+    storage = Conf.storage()
+    poll = Poll(text=update.message.text)
+    poll_id = storage.insert_poll(poll)
+    send_saved_poll(context.bot, update.message.chat.id, poll_id)
+    return ConversationHandler.END
+
+
+@actualize_users
+def handle_vote(update: Update, context: CallbackContext):
+    query = update.callback_query  # type: CallbackQuery
+
+    def parse_vote_data(data: str):
+        [poll_id_str, option_id] = data.split(':')
+        return int(poll_id_str), OPTION.from_string(option_id)
+
+    poll_id, option = parse_vote_data(query.data)
+
+    log.info('user %s vote for %s', poll_id, option)
+
+    storage = Conf.storage()
+
+    storage.vote(poll_id, update.effective_user, option)
+
+    update_poll_messages(context.bot, poll_id)
+
+    query.answer()
+
+
+@actualize_users
+def handle_inline_query(update: Update, context: CallbackContext):
+    query = update.inline_query  # type: InlineQuery
+    poll_id = int(query.query)
+    poll_ext = Conf.storage().select_poll(poll_id)
+    bot = context.bot  # type: Bot
+    bot.answer_inline_query(cache_time=0,
+                            inline_query_id=query.id,
+                            results=[InlineQueryResultArticle(
+                                id=poll_id,
+                                title=poll_ext.text,
+                                input_message_content=InputTextMessageContent(
+                                    message_text=generate_text(poll_ext),
+                                    parse_mode=ParseMode.MARKDOWN
+                                ),
+                                reply_markup=create_poll_markup(poll_ext.id)
+                            )])
+
+
+@actualize_users
+def handle_choosen_inline_query(update: Update, context: CallbackContext):
+    query = update.chosen_inline_result  # type: ChosenInlineResult
+    poll_id = int(query.query)
+    message_id = MessageId(inline_message_id=query.inline_message_id)
+    Conf.storage().insert_message(poll_id, message_id)
+
+
+class Conf:
+    _db = None
+
+    @classmethod
+    def init(cls, in_memory_db: bool):
+        cls._db = ':memory:' if in_memory_db else 'polls.sqlite'
+        Conf.storage()
+
+    @classmethod
+    def storage(cls):
+        return Storage(connection=sqlite3.connect(cls._db))
+
+
+def main():
+    logging.basicConfig(level=logging.DEBUG, style='{')
+
+    parser = ArgumentParser()
+    parser.add_argument('--proxy', type=str)
+    parser.add_argument('token', type=FileType('r'))
+    parser.add_argument('--in_memory', action='store_const', const=True, default=False)
+
+    args = parser.parse_args()
+
+    Conf.init(args.in_memory)
+
+    token = args.token.readline().rstrip()
+
+    request = telegram.utils.request.Request(proxy_url=args.proxy, con_pool_size=8)
+
+    bot = Bot(token=token, request=request)
+    updater = Updater(bot=bot, use_context=True)
+
+    dispatcher = updater.dispatcher
+    dispatcher.add_handler(ConversationHandler(
+        entry_points=[CommandHandler(['start', 'reset'], ask_text)],
+        states={
+            STATE.WAIT_FOR_TEXT: [MessageHandler(Filters.text, handle_text)]
+        },
+        fallbacks=[]
+    ))
+    dispatcher.add_handler(CallbackQueryHandler(
+        callback=handle_vote
+    ))
+    dispatcher.add_handler(InlineQueryHandler(callback=handle_inline_query))
+    dispatcher.add_handler(ChosenInlineResultHandler(callback=handle_choosen_inline_query))
+
+    updater.start_polling()
+    updater.idle()
+
+
+if __name__ == '__main__':
+    main()
