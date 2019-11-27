@@ -153,6 +153,37 @@ class PollExt(Poll):
 
     __repr__ = __str__
 
+    def build_text(self):
+        log.info(f'Generating text for poll {self}')
+
+        def total_str(votes: List):
+            n = len(votes)
+            return f'({n})' if n > 0 else ''
+
+        text = str(self.text)
+        text += '\n\n'
+        text += f'`+ `{total_str(self.votes_pro)}\n'
+        for prefix, vote in zip(generate_prefix(len(self.votes_pro)), self.votes_pro):
+            text += '`{}` {}\n'.format(prefix, vote.show())
+        text += '\n`-`\n'
+        for prefix, vote in zip(generate_prefix(len(self.votes_cons)), self.votes_cons):
+            text += '`{}` {}\n'.format(prefix, vote.show())
+        text += '\n'
+        return text
+
+    def build_markup(self) -> InlineKeyboardMarkup:
+        log.info(f'Generating markup for poll {self._id}')
+
+        def button(opt: OPTION):
+            return InlineKeyboardButton(text=opt.text, callback_data=(poll_id + ':' + opt.option_id))
+
+        poll_id = str(self._id)
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [button(OPTION.ME_TOO), button(OPTION.ME_NOT)],
+            [button(OPTION.PLUS_ONE)], [button(OPTION.MINUS_ONE)],
+            [InlineKeyboardButton(text='Share', switch_inline_query=poll_id)]
+        ])
+
 
 class Storage:
     def __init__(self, connection: sqlite3.Connection):
@@ -346,20 +377,6 @@ def ask_text(update: Update, context: CallbackContext):
     return STATE.WAIT_FOR_TEXT
 
 
-def build_poll_markup(poll_id: PollId) -> InlineKeyboardMarkup:
-    log.info(f'Generating markup for poll {poll_id}')
-
-    def button(opt: OPTION):
-        return InlineKeyboardButton(text=opt.text, callback_data=(poll_id + ':' + opt.option_id))
-
-    poll_id = str(poll_id)
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [button(OPTION.ME_TOO), button(OPTION.ME_NOT)],
-        [button(OPTION.PLUS_ONE)], [button(OPTION.MINUS_ONE)],
-        [InlineKeyboardButton(text='Share', switch_inline_query=poll_id)]
-    ])
-
-
 def generate_prefix(size: int):
     yielded = 0
     if yielded == size:
@@ -371,32 +388,13 @@ def generate_prefix(size: int):
     return
 
 
-def build_poll_text(poll: PollExt):
-    log.info(f'Generating text for poll {poll}')
-
-    def total_str(votes: List):
-        n = len(votes)
-        return f'({n})' if n > 0 else ''
-
-    text = str(poll.text)
-    text += '\n\n'
-    text += f'`+ `{total_str(poll.votes_pro)}\n'
-    for prefix, vote in zip(generate_prefix(len(poll.votes_pro)), poll.votes_pro):
-        text += '`{}` {}\n'.format(prefix, vote.show())
-    text += '\n`-`\n'
-    for prefix, vote in zip(generate_prefix(len(poll.votes_cons)), poll.votes_cons):
-        text += '`{}` {}\n'.format(prefix, vote.show())
-    text += '\n'
-    return text
-
-
 def send_saved_poll(bot: Bot, chat_id: int, poll_id: PollId):
     storage = Conf.storage()
     poll = storage.select_poll(poll_id=poll_id)
     sent_message = bot.send_message(chat_id=chat_id,
-                                    text=build_poll_text(poll),
+                                    text=poll.build_text(),
                                     parse_mode=ParseMode.MARKDOWN,
-                                    reply_markup=build_poll_markup(poll.id))
+                                    reply_markup=poll.build_markup())
     sent_message_id = MessageId(chat_id=sent_message.chat_id, message_id=sent_message.message_id)
     storage.insert_message(poll_id, sent_message_id)
 
@@ -410,9 +408,9 @@ def update_poll_messages(bot: Bot, poll_id: PollId):
             bot.edit_message_text(chat_id=msg.chat_id,
                                   message_id=msg.message_id,
                                   inline_message_id=msg.inline_message_id,
-                                  text=build_poll_text(poll),
+                                  text=poll.build_text(),
                                   parse_mode=ParseMode.MARKDOWN,
-                                  reply_markup=build_poll_markup(poll.id)
+                                  reply_markup=poll.build_markup()
                                   )
         except Exception as e:
             log.error(f'Cannot edit: {e}')
@@ -460,10 +458,10 @@ def handle_inline_query(update: Update, context: CallbackContext):
                                 id=poll_id,
                                 title=poll_ext.text,
                                 input_message_content=InputTextMessageContent(
-                                    message_text=build_poll_text(poll_ext),
+                                    message_text=poll_ext.build_text(),
                                     parse_mode=ParseMode.MARKDOWN
                                 ),
-                                reply_markup=build_poll_markup(poll_ext.id)
+                                reply_markup=poll_ext.build_markup()
                             )])
 
 
