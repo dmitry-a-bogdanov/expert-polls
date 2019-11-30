@@ -10,6 +10,10 @@ import telegram.utils
 import telegram.utils.request
 from telegram import *
 from telegram.ext import *
+from telegram.ext.dispatcher import run_async
+
+import datetime
+import locale
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +54,9 @@ class MessageId:
 
 
 class STATE:
-    WAIT_FOR_TEXT = 0
+    WAIT_FOR_PLACE = 0
+    WAIT_FOR_DATE = 1
+    WAIT_FOR_TIME = 2
 
 
 class Emoji:
@@ -224,6 +230,16 @@ class Storage:
                 msg_id INTEGER,
                 inline_message_id INTEGER
             );
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER NOT NULL,
+                place TEXT,
+                d TIMESTAMP,
+                t TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS places (
+                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                place TEXT NOT NULL
+            );
             CREATE TRIGGER IF NOT EXISTS update_own_votes_datetime
                 AFTER UPDATE ON own_votes
                 BEGIN
@@ -288,6 +304,43 @@ class Storage:
             INSERT OR REPLACE INTO users (uid, name)
             VALUES ({uid}, {name})
         ''')
+        self._db.commit()
+
+    def start_sessions(self, user: User):
+        self._db.execute(f'INSERT OR REPLACE INTO sessions (id) VALUES ({user.id});')
+        self._db.commit()
+
+    def set_place_in_session(self, user: User, place: str):
+        self._db.execute(f"UPDATE sessions SET place = '{place}' WHERE id = {user.id}")
+        self._db.commit()
+
+    def set_date_in_session(self, user: User, date: datetime.date):
+        faketime = datetime.datetime.now().time()
+        self._db.execute(f'UPDATE sessions SET d = ? WHERE id = {user.id}', [datetime.datetime.combine(date, faketime)])
+        self._db.commit()
+
+    def set_time_in_session(self, user: User, time: datetime.time):
+        fakedate = datetime.datetime.now().date()
+        self._db.execute(f'UPDATE sessions SET t = ? WHERE id = {user.id}', [datetime.datetime.combine(fakedate, time)])
+        self._db.commit()
+
+    def get_session(self, user: User) -> Tuple[str, datetime.date, datetime.time]:
+        c = self._db.execute(f'SELECT place, d, t FROM sessions where id = {user.id}')
+        r = c.fetchone()
+        return r[0], r[1].date(), r[2].time()
+
+    def insert_place(self, place: str):
+        self._db.execute(f"INSERT OR IGNORE INTO places (place) VALUES ('{place}')")
+        self._db.commit()
+
+    def select_places(self) -> Dict[int, str]:
+        c = self._db.cursor()
+        c.execute(f'SELECT id, place FROM places')
+        places = {p[0]: p[1] for p in c.fetchall()}
+        return places
+
+    def remove_place(self, id: int):
+        self._db.execute(f'REMOVE FROM places WHERE id = {id}')
         self._db.commit()
 
     def vote(self, poll_id: PollId, user: User, opt: OPTION):
@@ -369,12 +422,102 @@ def actualize_users(handler):
 
 
 @actualize_users
-def ask_text(update: Update, context: CallbackContext):
+def handle_start(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} started conversation')
+    storage = Conf.storage()
 
-    update.message.reply_markdown('Введите текст *опроса*')
+    storage.start_sessions(update.effective_user)
 
-    return STATE.WAIT_FOR_TEXT
+    places = storage.select_places()
+    keyboard = [[p] for p in places.values()]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+
+    update.message.reply_markdown('Что? - и так понятно. Где?', reply_markup=reply_markup)
+
+    return STATE.WAIT_FOR_PLACE
+
+
+@actualize_users
+def handle_place(update: Update, context: CallbackContext):
+    log.info(f'user {update.effective_user} sent place')
+    storage = Conf.storage()
+    msg = update.message  # type: Message
+    place = msg.text_markdown
+    storage.set_place_in_session(update.effective_user, place)
+
+    today = datetime.date.today()
+    keyboard = []  # type: List[List[str]]
+    COLUMNS = 2
+    ROWS = 4
+    for i in range(ROWS):
+        keyboard.append([])
+        for j in range(COLUMNS):
+            day = today + datetime.timedelta(days=COLUMNS * i + j)
+            keyboard[i].append(day.strftime('%d.%m (%A)'))
+    markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+
+    update.message.reply_markdown('Когда?', reply_markup=markup)
+
+    return STATE.WAIT_FOR_DATE
+
+
+@actualize_users
+def handle_date(update: Update, context: CallbackContext):
+    log.info(f'user {update.effective_user} sent date')
+
+    today = datetime.date.today()
+
+    date_str = update.message.text  # type: str
+    date_str = date_str.split(' ')[0]
+    date = datetime.datetime.strptime(date_str, '%d.%m').date()
+    date = date.replace(year=today.year)
+    if date < today:
+        date = date.replace(today.year + 1)
+
+    storage = Conf.storage()
+    storage.set_date_in_session(update.effective_user, date)
+
+    markup = ReplyKeyboardMarkup(keyboard=[["11:00", "11:11", "19:00", "19:05"]], one_time_keyboard=True,
+                                 resize_keyboard=True)
+
+    update.message.reply_markdown('А точнее?', reply_markup=markup)
+
+    return STATE.WAIT_FOR_TIME
+
+
+@actualize_users
+def list_places(update: Update, context: CallbackContext):
+    places = Conf.storage().select_places()
+    text = '\n'.join([f'{p[0]}) {p[1]}' for p in places.items()])
+    update.message.reply_markdown(text)
+    return ConversationHandler.END
+
+
+@actualize_users
+def remove_place(update: Update, context: CallbackContext):
+    place_id = int(update.message.text)
+    Conf.storage().remove_place(place_id)
+    return ConversationHandler.END
+
+
+@actualize_users
+def handle_time(update: Update, context: CallbackContext):
+    log.info(f'user {update.effective_user} sent time')
+
+    time_str = update.message.text  # type: str
+    time = datetime.datetime.strptime(time_str, '%H:%M').time()
+
+    storage = Conf.storage()
+    storage.set_time_in_session(update.effective_user, time)
+
+    (place, date, time) = storage.get_session(update.effective_user)
+
+    text = f'{date.strftime("%d %B %Y, %A")}. {time.strftime("%H:%M")}. {place}\n\nОбкашляем вопросики?'
+    poll_id = storage.insert_poll(Poll(text))
+
+    send_saved_poll(context.bot, update.message.chat.id, poll_id)
+
+    return ConversationHandler.END
 
 
 def generate_prefix(size: int):
@@ -395,8 +538,23 @@ def send_saved_poll(bot: Bot, chat_id: int, poll_id: PollId):
                                     text=poll.build_text(),
                                     parse_mode=ParseMode.MARKDOWN,
                                     reply_markup=poll.build_markup())
+    bot.send_message(chat_id=chat_id, text='Готово. Ещё? press /newpoll', reply_markup=ReplyKeyboardRemove())
     sent_message_id = MessageId(chat_id=sent_message.chat_id, message_id=sent_message.message_id)
     storage.insert_message(poll_id, sent_message_id)
+
+
+@run_async
+def update_poll_message(bot: Bot, poll: PollExt, msg: MessageId):
+    try:
+        bot.edit_message_text(chat_id=msg.chat_id,
+                              message_id=msg.message_id,
+                              inline_message_id=msg.inline_message_id,
+                              text=poll.build_text(),
+                              parse_mode=ParseMode.MARKDOWN,
+                              reply_markup=poll.build_markup()
+                              )
+    except Exception as e:
+        log.error(f'Cannot edit: {e}')
 
 
 def update_poll_messages(bot: Bot, poll_id: PollId):
@@ -404,16 +562,7 @@ def update_poll_messages(bot: Bot, poll_id: PollId):
     messages = storage.select_messages(poll_id)
     poll = storage.select_poll(poll_id)
     for msg in messages:
-        try:
-            bot.edit_message_text(chat_id=msg.chat_id,
-                                  message_id=msg.message_id,
-                                  inline_message_id=msg.inline_message_id,
-                                  text=poll.build_text(),
-                                  parse_mode=ParseMode.MARKDOWN,
-                                  reply_markup=poll.build_markup()
-                                  )
-        except Exception as e:
-            log.error(f'Cannot edit: {e}')
+        update_poll_message(bot, poll, msg)
 
 
 @actualize_users
@@ -473,6 +622,17 @@ def handle_choosen_inline_query(update: Update, context: CallbackContext):
     Conf.storage().insert_message(poll_id, message_id)
 
 
+@actualize_users
+def handle_add_place(update: Update, context: CallbackContext):
+    log.info(f'Adding place: {update.message}')
+    msg = update.message  # type: Message
+    command = msg.entities[0]  # type: MessageEntity
+    place = msg.text[(command.length + command.offset + 1):]
+    Conf.storage().insert_place(place)
+
+    return ConversationHandler.END
+
+
 class Conf:
     _db = None
 
@@ -483,12 +643,15 @@ class Conf:
 
     @classmethod
     def storage(cls):
-        return Storage(connection=sqlite3.connect(cls._db))
+        return Storage(connection=sqlite3.connect(cls._db,
+                                                  detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES))
 
 
 def main():
     logging.basicConfig(level=logging.DEBUG,
                         format='[%(asctime)s %(filename)s:%(lineno)d:%(funcName)s %(name)s] %(levelname)s: %(message)s')
+
+    locale.setlocale(locale.LC_TIME, "ru_RU.UTF-8")
 
     parser = ArgumentParser()
     parser.add_argument('--proxy', type=str)
@@ -508,9 +671,15 @@ def main():
 
     dispatcher = updater.dispatcher
     dispatcher.add_handler(ConversationHandler(
-        entry_points=[CommandHandler(['start', 'reset'], ask_text)],
+        entry_points=[
+            CommandHandler(['start', 'reset', 'newpoll', 'new_poll'], handle_start),
+            CommandHandler(['add_place'], handle_add_place),
+            CommandHandler(['list_places'], list_places)
+        ],
         states={
-            STATE.WAIT_FOR_TEXT: [MessageHandler(Filters.text, handle_text)]
+            STATE.WAIT_FOR_PLACE: [MessageHandler(Filters.text, handle_place)],
+            STATE.WAIT_FOR_DATE: [MessageHandler(Filters.text, handle_date)],
+            STATE.WAIT_FOR_TIME: [MessageHandler(Filters.text, handle_time)]
         },
         fallbacks=[]
     ))
