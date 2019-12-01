@@ -12,12 +12,15 @@ from telegram import *
 from telegram.ext import *
 from telegram.ext.dispatcher import run_async
 
+from functools import wraps
+
 import datetime
 import locale
 
 log = logging.getLogger(__name__)
 
 PollId = int
+DMITRY_BOGDDANOV = 160453507  # type: int
 
 
 class MessageId:
@@ -418,6 +421,7 @@ class Storage:
 
 
 def actualize_users(handler):
+    @wraps(handler)
     def wrapped(update: Update, context: CallbackContext):
         storage = Conf.storage()
         storage.upsert_user(update.effective_user)
@@ -426,7 +430,22 @@ def actualize_users(handler):
     return wrapped
 
 
+def admins_only(handler):
+    @wraps(handler)
+    def wrapped(update: Update, context: CallbackContext):
+        user = update.effective_user  # type: User
+        if user.id != DMITRY_BOGDDANOV:
+            chat = update.effective_chat  # type: Chat
+            context.bot.send_message(chat_id=chat.id, text='You are not my master')
+            return ConversationHandler.END
+        else:
+            return handler(update, context)
+
+    return wrapped
+
+
 @actualize_users
+@admins_only
 def handle_start(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} started conversation')
     storage = Conf.storage()
@@ -443,6 +462,7 @@ def handle_start(update: Update, context: CallbackContext):
 
 
 @actualize_users
+@admins_only
 def handle_place(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} sent place')
     storage = Conf.storage()
@@ -467,6 +487,7 @@ def handle_place(update: Update, context: CallbackContext):
 
 
 @actualize_users
+@admins_only
 def handle_date(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} sent date')
 
@@ -491,6 +512,7 @@ def handle_date(update: Update, context: CallbackContext):
 
 
 @actualize_users
+@admins_only
 def list_places(update: Update, context: CallbackContext):
     places = Conf.storage().select_places()
     text = '\n'.join([f'{p[0]}) {p[1]}' for p in places.items()])
@@ -499,6 +521,7 @@ def list_places(update: Update, context: CallbackContext):
 
 
 @actualize_users
+@admins_only
 def remove_place(update: Update, context: CallbackContext):
     place_id = int(update.message.text)
     Conf.storage().remove_place(place_id)
@@ -506,6 +529,7 @@ def remove_place(update: Update, context: CallbackContext):
 
 
 @actualize_users
+@admins_only
 def handle_time(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} sent time')
 
@@ -628,6 +652,7 @@ def handle_choosen_inline_query(update: Update, context: CallbackContext):
 
 
 @actualize_users
+@admins_only
 def handle_add_place(update: Update, context: CallbackContext):
     log.info(f'Adding place: {update.message}')
     msg = update.message  # type: Message
