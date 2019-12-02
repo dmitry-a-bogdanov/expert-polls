@@ -344,7 +344,7 @@ class Storage:
         return places
 
     def remove_place(self, id: int):
-        self._db.execute('REMOVE FROM places WHERE id = :id', {'id': id})
+        self._db.execute('DELETE FROM places WHERE id = :id', {'id': id})
         self._db.commit()
 
     def vote(self, poll_id: PollId, user: User, opt: OPTION):
@@ -512,18 +512,21 @@ def handle_date(update: Update, context: CallbackContext):
 @actualize_users
 @admins_only
 def list_places(update: Update, context: CallbackContext):
+    log.info(f'asked for list places')
     places = Conf.storage().select_places()
     text = '\n'.join([f'{p[0]}) {p[1]}' for p in places.items()])
     update.message.reply_markdown(text)
-    return ConversationHandler.END
+    return None
 
 
 @actualize_users
 @admins_only
 def remove_place(update: Update, context: CallbackContext):
-    place_id = int(update.message.text)
+    message = update.message  # type: Message
+    command = message.entities[0]  # type: MessageEntity
+    place_id = int(message.text[command.offset + command.length + 1:])
     Conf.storage().remove_place(place_id)
-    return ConversationHandler.END
+    return None
 
 
 @actualize_users
@@ -593,15 +596,6 @@ def update_poll_messages(bot: Bot, poll_id: PollId):
 
 
 @actualize_users
-def handle_text(update: Update, context: CallbackContext):
-    storage = Conf.storage()
-    poll = Poll(text=update.message.text)
-    poll_id = storage.insert_poll(poll)
-    send_saved_poll(context.bot, update.message.chat.id, poll_id)
-    return ConversationHandler.END
-
-
-@actualize_users
 def handle_vote(update: Update, context: CallbackContext):
     query = update.callback_query  # type: CallbackQuery
 
@@ -618,8 +612,8 @@ def handle_vote(update: Update, context: CallbackContext):
     storage.vote(poll_id, update.effective_user, option)
 
     update_poll_messages(context.bot, poll_id)
-
     query.answer()
+    return None
 
 
 @actualize_users
@@ -639,6 +633,7 @@ def handle_inline_query(update: Update, context: CallbackContext):
                                 ),
                                 reply_markup=poll_ext.build_markup()
                             )])
+    return None
 
 
 @actualize_users
@@ -647,7 +642,7 @@ def handle_choosen_inline_query(update: Update, context: CallbackContext):
     poll_id = int(query.query)
     message_id = MessageId(inline_message_id=query.inline_message_id)
     Conf.storage().insert_message(poll_id, message_id)
-
+    return None
 
 @actualize_users
 @admins_only
@@ -658,7 +653,7 @@ def handle_add_place(update: Update, context: CallbackContext):
     place = msg.text[(command.length + command.offset + 1):]
     Conf.storage().insert_place(place)
 
-    return ConversationHandler.END
+    return None
 
 
 class Conf:
@@ -666,7 +661,7 @@ class Conf:
 
     @classmethod
     def init(cls, in_memory_db: bool):
-        cls._db = ':memory:' if in_memory_db else 'polls.sqlite'
+        cls._db = ':memory:' if in_memory_db else '/persistent/polls.sqlite'
         Conf.storage()
 
     @classmethod
@@ -704,7 +699,8 @@ def main():
         entry_points=[
             CommandHandler(['start', 'reset', 'newpoll', 'new_poll'], handle_start),
             CommandHandler(['add_place'], handle_add_place),
-            CommandHandler(['list_places'], list_places)
+            CommandHandler(['list_places'], list_places),
+            CommandHandler(['remove_place'], remove_place)
         ],
         states={
             STATE.WAIT_FOR_PLACE: [MessageHandler(Filters.text, handle_place)],
@@ -719,7 +715,7 @@ def main():
     dispatcher.add_handler(InlineQueryHandler(callback=handle_inline_query))
     dispatcher.add_handler(ChosenInlineResultHandler(callback=handle_choosen_inline_query))
 
-    updater.start_polling()
+    updater.start_polling(timeout=60)
     updater.idle()
 
 

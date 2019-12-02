@@ -5,6 +5,11 @@ RUN apt-get update && \
     apt-get clean
 RUN echo "388" | dpkg-reconfigure -plow locales
 RUN pip3 install python-telegram-bot
+
 COPY bot /root/bot
+
 RUN chmod 500 /root/bot
+
+VOLUME /persistent/
+
 ENTRYPOINT ["/root/bot"]
