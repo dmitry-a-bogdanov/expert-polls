@@ -6,7 +6,7 @@ RUN apt-get update && \
 RUN echo "388" | dpkg-reconfigure -plow locales
 RUN pip3 install python-telegram-bot
 
-COPY bot /root/bot
+COPY bot *.py /root/
 
 RUN chmod 500 /root/bot
 
