@@ -8,7 +8,7 @@ class Storage:
     def __init__(self, connection: sqlite3.Connection):
         self._data = dict()
         self._seq = 0
-        self._db = connection
+        self._db = connection  # type: sqlite3.Connection
 
         self._db.executescript('''
             BEGIN TRANSACTION;
@@ -79,12 +79,12 @@ class Storage:
 
     def insert_poll(self, poll: Poll) -> PollId:
         log.info(f'Saving poll {poll}')
-        cursor = self._db.cursor()
-        cursor.execute('''
-            INSERT INTO polls (text) values (:text);
-        ''', {'text': poll.text})
-        cursor.connection.commit()
-        return cursor.lastrowid
+        with self._db as db:
+            cursor = db.cursor()
+            cursor.execute('''
+                INSERT INTO polls (text) values (:text);
+            ''', {'text': poll.text})
+            return cursor.lastrowid
 
     def select_poll(self, poll_id: PollId) -> PollExt:
         log.info(f'Selecting poll with id {poll_id}')
@@ -98,10 +98,11 @@ class Storage:
 
     def insert_message(self, poll: PollId, message_id: MessageId):
         log.info(f'saving message {message_id} for poll {poll}')
-        self._db.execute(
-            'INSERT OR REPLACE INTO messages(poll_id, chat_id, msg_id, inline_message_id) VALUES (?, ?, ?, ?)',
-            [poll, message_id.chat_id, message_id.message_id, message_id.inline_message_id])
-        self._db.commit()
+        with self._db as db:
+            cursor = db.cursor()
+            cursor.execute(
+                'INSERT OR REPLACE INTO messages(poll_id, chat_id, msg_id, inline_message_id) VALUES (?, ?, ?, ?)',
+                [poll, message_id.chat_id, message_id.message_id, message_id.inline_message_id])
 
     def select_messages(self, poll_id: PollId) -> List[MessageId]:
         log.info(f'selecting messages for poll with id {poll_id}')
@@ -112,43 +113,53 @@ class Storage:
 
     def save_user(self, uid: int, name: str):
         log.info(f'saving user {name} (uid={uid})')
-        c = self._db.cursor()
-        c.execute('BEGIN')
-        c.execute('INSERT OR REPLACE INTO users (uid, name) VALUES (:uid, :name)', {'uid': uid, 'name': name})
-        self._db.commit()
+        with self._db as db:
+            cursor = db.cursor()
+            cursor.execute('INSERT OR REPLACE INTO users (uid, name) VALUES (:uid, :name)', {
+                'uid': uid,
+                'name': name
+            })
 
     def start_sessions(self, user: User):
-        self._db.execute('INSERT OR REPLACE INTO sessions (id) VALUES (:uid)', {'uid': user.id})
-        self._db.commit()
+        with self._db as db:
+            cursor = db.cursor()
+            cursor.execute('INSERT OR REPLACE INTO sessions (id) VALUES (:uid)', {'uid': user.id})
 
     def set_place_in_session(self, user: User, place: str):
-        self._db.execute('UPDATE sessions SET place = :place WHERE id = :uid', {'place': place, 'uid': user.id})
-        self._db.commit()
+        with self._db as db:
+            cursor = db.cursor()
+            cursor.execute('UPDATE sessions SET place = :place WHERE id = :uid', {
+                'place': place,
+                'uid': user.id
+            })
 
     def set_date_in_session(self, user: User, date: datetime.date):
-        faketime = datetime.datetime.now().time()
-        self._db.execute('UPDATE sessions SET d = :date WHERE id = :uid', {
-            'date': datetime.datetime.combine(date, faketime),
-            'uid': user.id
-        })
-        self._db.commit()
+        fake_time = datetime.datetime.now().time()
+        with self._db as db:
+            cursor = db.cursor()
+            cursor.execute('UPDATE sessions SET d = :date WHERE id = :uid', {
+                'date': datetime.datetime.combine(date, fake_time),
+                'uid': user.id
+            })
 
     def set_time_in_session(self, user: User, time: datetime.time):
-        fakedate = datetime.datetime.now().date()
-        self._db.execute('UPDATE sessions SET t = :time WHERE id = :uid', {
-            'time': datetime.datetime.combine(fakedate, time),
-            'uid': user.id
-        })
-        self._db.commit()
+        fake_date = datetime.datetime.now().date()
+        with self._db as db:
+            cursor = db.cursor()
+            cursor.execute('UPDATE sessions SET t = :time WHERE id = :uid', {
+                'time': datetime.datetime.combine(fake_date, time),
+                'uid': user.id
+            })
 
     def get_session(self, user: User) -> Tuple[str, datetime.date, datetime.time]:
-        c = self._db.execute('SELECT place, d, t FROM sessions where id = :uid', {'uid': user.id})
+        c = self._db.cursor().execute('SELECT place, d, t FROM sessions where id = :uid', {'uid': user.id})
         r = c.fetchone()
         return r[0], r[1].date(), r[2].time()
 
     def insert_place(self, place: str):
-        self._db.execute('INSERT OR IGNORE INTO places (place) VALUES (?)', [place])
-        self._db.commit()
+        with self._db as db:  # type: sqlite3.Connection
+            cursor = db.cursor()
+            cursor.execute('INSERT OR IGNORE INTO places (place) VALUES (?)', [place])
 
     def select_places(self) -> Dict[int, str]:
         c = self._db.cursor()
@@ -157,44 +168,47 @@ class Storage:
         return places
 
     def remove_place(self, id: int):
-        self._db.execute('DELETE FROM places WHERE id = :id', {'id': id})
-        self._db.commit()
+        with self._db as db:
+            cursor = db.cursor()
+            cursor.execute('DELETE FROM places WHERE id = :id', {'id': id})
 
     def vote(self, poll_id: PollId, user: User, opt: OPTION):
         uid = user.id
-        self._db.execute('BEGIN TRANSACTION;')
-        if opt == OPTION.ME_TOO:
-            self.__insert_own_vote_in_tx(poll_id, uid, VoteType.PRO)
-        elif opt == OPTION.ME_NOT:
-            self.__insert_own_vote_in_tx(poll_id, uid, VoteType.CONS)
-        elif opt == OPTION.PLUS_ONE:
-            self._execute('''
-            INSERT INTO others_votes (poll_id, uid, vote_type)
-            VALUES (:poll_id, :uid, :vote_type);
-            ''', poll_id=poll_id, uid=uid, vote_type=VoteType.PLUS_ONE)
-        elif opt == OPTION.MINUS_ONE:
-            self._execute('''
-            DELETE FROM others_votes
-            WHERE rowid = (SELECT MAX(rowid) FROM others_votes WHERE poll_id = :poll_id AND uid = :uid)
-            ''', poll_id=poll_id, uid=uid)
-        else:
-            log.error(f'Unknown option: {opt}. poll: {poll_id}, user: {user}', opt, poll_id, user)
-            raise ValueError('Unknown option')
-        self._db.commit()
+        with self._db as db:  # type: sqlite3.Connection
+            cursor = db.cursor()
+            cursor.execute('BEGIN TRANSACTION;')
+            if opt == OPTION.ME_TOO:
+                self.__insert_own_vote_in_tx(cursor, poll_id, uid, VoteType.PRO)
+            elif opt == OPTION.ME_NOT:
+                self.__insert_own_vote_in_tx(cursor, poll_id, uid, VoteType.CONS)
+            elif opt == OPTION.PLUS_ONE:
+                cursor.execute('''
+                    INSERT INTO others_votes (poll_id, uid, vote_type)
+                    VALUES (:poll_id, :uid, :vote_type);
+                    ''', {'poll_id': poll_id, 'uid': uid, 'vote_type': VoteType.PLUS_ONE})
+            elif opt == OPTION.MINUS_ONE:
+                cursor.execute('''
+                    DELETE FROM others_votes
+                    WHERE rowid = (SELECT MAX(rowid) FROM others_votes WHERE poll_id = :poll_id AND uid = :uid)
+                ''', {'poll_id': poll_id, 'uid': uid})
+            else:
+                log.error(f'Unknown option: {opt}. poll: {poll_id}, user: {user}', opt, poll_id, user)
+                raise ValueError('Unknown option')
 
     def _execute(self, request: str, **kwargs):
         self._db.execute(request, kwargs)
 
-    def __insert_own_vote_in_tx(self, poll_id: PollId, uid: int, vote_type: VoteType):
-        self._execute('''
-        INSERT OR IGNORE INTO own_votes (poll_id, uid, vote_type)
-        VALUES (:poll_id, :uid, :vote_type)
-        ''', poll_id=poll_id, uid=uid, vote_type=vote_type)
-        self._execute('''
-        UPDATE own_votes
-        SET vote_type = :vote_type
-        WHERE poll_id = :poll_id AND uid = :uid
-        ''', poll_id=poll_id, uid=uid, vote_type=vote_type)
+    @staticmethod
+    def __insert_own_vote_in_tx(cursor: sqlite3.Cursor, poll_id: PollId, uid: int, vote_type: VoteType):
+        cursor.execute('''
+            INSERT OR IGNORE INTO own_votes (poll_id, uid, vote_type)
+            VALUES (:poll_id, :uid, :vote_type)
+            ''', {'poll_id': poll_id, 'uid': uid, 'vote_type': vote_type})
+        cursor.execute('''
+            UPDATE own_votes
+            SET vote_type = :vote_type
+            WHERE poll_id = :poll_id AND uid = :uid
+            ''', {'poll_id': poll_id, 'uid': uid, 'vote_type': vote_type})
 
     def select_votes(self, poll_id: PollId) -> List[Vote]:
         c = self._db.cursor()
@@ -220,12 +234,13 @@ class Storage:
         return votes
 
     def upsert_user(self, user: User):
-        self._execute('''
-        INSERT INTO users (uid, name)
-        VALUES (:uid, :name)
-        ON CONFLICT(uid) DO
-            UPDATE
-            SET name = :name
-            WHERE uid = :uid
-        ''', uid=user.id, name=user.full_name)
-        self._db.commit()
+        log.info(f'updating user uid={user.id}, name={user.name}')
+        with self._db as db:
+            db.execute('''
+            INSERT INTO users (uid, name)
+            VALUES (:uid, :name)
+            ON CONFLICT(uid) DO
+                UPDATE
+                SET name = :name
+                WHERE uid = :uid
+            ''', {'uid': user.id, 'name': user.full_name})
