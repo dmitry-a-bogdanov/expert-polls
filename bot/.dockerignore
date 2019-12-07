@@ -2,3 +2,4 @@ Dockerfile
 .dockerignore
 .idea/
 __pycache__/
+.gitignore
