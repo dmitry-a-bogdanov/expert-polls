@@ -137,6 +137,26 @@ def remove_place(update: Update, context: CallbackContext):
     return None
 
 
+def poll_text(header: str) -> str:
+    return f'{header}\n\nОбкашляем вопросики?'
+
+
+def poll_header(place: str, date: datetime.date, time: datetime.time) -> str:
+    return f'{date.strftime("%d %B %Y, %A")}. {time.strftime("%H:%M")}. {place}'
+
+
+@actualize_users
+@admins_only
+def create_poll(update: Update, context: CallbackContext):
+    msg = update.message  # type: Message
+    command_entity = msg.entities[0]  # type: MessageEntity
+    text = msg.text_markdown[command_entity.offset + command_entity.length + 1:]
+    storage = Conf.storage()
+    poll_id = storage.insert_poll(Poll(poll_text(text)))
+    send_saved_poll(context.bot, update.message.chat.id, poll_id)
+    return ConversationHandler.END
+
+
 @actualize_users
 @admins_only
 def handle_time(update: Update, context: CallbackContext):
@@ -150,7 +170,7 @@ def handle_time(update: Update, context: CallbackContext):
 
     (place, date, time) = storage.get_session(update.effective_user)
 
-    text = f'{date.strftime("%d %B %Y, %A")}. {time.strftime("%H:%M")}. {place}\n\nОбкашляем вопросики?'
+    text = poll_text(poll_header(place, date, time))
     poll_id = storage.insert_poll(Poll(text))
 
     send_saved_poll(context.bot, update.message.chat.id, poll_id)
@@ -302,7 +322,8 @@ def main():
             CommandHandler(['start', 'reset', 'newpoll', 'new_poll'], handle_start),
             CommandHandler(['add_place'], handle_add_place),
             CommandHandler(['list_places'], list_places),
-            CommandHandler(['remove_place'], remove_place)
+            CommandHandler(['remove_place'], remove_place),
+            CommandHandler(['create_poll'], create_poll)
         ],
         states={
             STATE.WAIT_FOR_PLACE: [MessageHandler(Filters.text, handle_place)],
