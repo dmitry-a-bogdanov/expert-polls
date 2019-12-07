@@ -1,11 +1,13 @@
 import sqlite3
 import datetime
+import threading
 
 from bot_types import *
 
 
 class Storage:
     def __init__(self, connection: sqlite3.Connection):
+        self._lock = threading.Lock()
         self._data = dict()
         self._seq = 0
         self._db = connection  # type: sqlite3.Connection
@@ -79,7 +81,7 @@ class Storage:
 
     def insert_poll(self, poll: Poll) -> PollId:
         log.info(f'Saving poll {poll}')
-        with self._db as db:
+        with self._lock, self._db as db:
             cursor = db.cursor()
             cursor.execute('''
                 INSERT INTO polls (text) values (:text);
@@ -98,7 +100,7 @@ class Storage:
 
     def insert_message(self, poll: PollId, message_id: MessageId):
         log.info(f'saving message {message_id} for poll {poll}')
-        with self._db as db:
+        with self._lock, self._db as db:
             cursor = db.cursor()
             cursor.execute(
                 'INSERT OR REPLACE INTO messages(poll_id, chat_id, msg_id, inline_message_id) VALUES (?, ?, ?, ?)',
@@ -113,7 +115,7 @@ class Storage:
 
     def save_user(self, uid: int, name: str):
         log.info(f'saving user {name} (uid={uid})')
-        with self._db as db:
+        with self._lock, self._db as db:
             cursor = db.cursor()
             cursor.execute('INSERT OR REPLACE INTO users (uid, name) VALUES (:uid, :name)', {
                 'uid': uid,
@@ -121,12 +123,12 @@ class Storage:
             })
 
     def start_sessions(self, user: User):
-        with self._db as db:
+        with self._lock, self._db as db:
             cursor = db.cursor()
             cursor.execute('INSERT OR REPLACE INTO sessions (id) VALUES (:uid)', {'uid': user.id})
 
     def set_place_in_session(self, user: User, place: str):
-        with self._db as db:
+        with self._lock, self._db as db:
             cursor = db.cursor()
             cursor.execute('UPDATE sessions SET place = :place WHERE id = :uid', {
                 'place': place,
@@ -135,7 +137,7 @@ class Storage:
 
     def set_date_in_session(self, user: User, date: datetime.date):
         fake_time = datetime.datetime.now().time()
-        with self._db as db:
+        with self._lock, self._db as db:
             cursor = db.cursor()
             cursor.execute('UPDATE sessions SET d = :date WHERE id = :uid', {
                 'date': datetime.datetime.combine(date, fake_time),
@@ -144,7 +146,7 @@ class Storage:
 
     def set_time_in_session(self, user: User, time: datetime.time):
         fake_date = datetime.datetime.now().date()
-        with self._db as db:
+        with self._lock, self._db as db:
             cursor = db.cursor()
             cursor.execute('UPDATE sessions SET t = :time WHERE id = :uid', {
                 'time': datetime.datetime.combine(fake_date, time),
@@ -157,7 +159,7 @@ class Storage:
         return r[0], r[1].date(), r[2].time()
 
     def insert_place(self, place: str):
-        with self._db as db:  # type: sqlite3.Connection
+        with self._lock, self._db as db:  # type: sqlite3.Connection
             cursor = db.cursor()
             cursor.execute('INSERT OR IGNORE INTO places (place) VALUES (?)', [place])
 
@@ -174,7 +176,7 @@ class Storage:
 
     def vote(self, poll_id: PollId, user: User, opt: OPTION):
         uid = user.id
-        with self._db as db:  # type: sqlite3.Connection
+        with self._lock, self._db as db:  # type: sqlite3.Connection
             cursor = db.cursor()
             cursor.execute('BEGIN TRANSACTION;')
             if opt == OPTION.ME_TOO:
@@ -235,7 +237,7 @@ class Storage:
 
     def upsert_user(self, user: User):
         log.info(f'updating user uid={user.id}, name={user.name}')
-        with self._db as db:
+        with self._lock, self._db as db:
             db.execute('''
             INSERT INTO users (uid, name)
             VALUES (:uid, :name)

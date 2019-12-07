@@ -256,16 +256,20 @@ def handle_add_place(update: Update, context: CallbackContext):
 
 class Conf:
     _db = None
+    _connection = None
+    _storage = None
 
     @classmethod
     def init(cls, db_path: str):
         cls._db = db_path
-        Conf.storage()
+        cls._connection = sqlite3.connect(cls._db,
+                                          detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+                                          check_same_thread=False)
+        cls._storage = Storage(cls._connection)
 
     @classmethod
-    def storage(cls):
-        return Storage(connection=sqlite3.connect(cls._db,
-                                                  detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES))
+    def storage(cls) -> Storage:
+        return cls._storage
 
 
 def main():
