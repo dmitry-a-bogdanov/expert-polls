@@ -7,77 +7,106 @@ from bot_types import *
 
 class Storage:
     def __init__(self, connection: sqlite3.Connection):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._data = dict()
         self._seq = 0
         self._db = connection  # type: sqlite3.Connection
+        self.upgrade()
 
-        self._db.executescript('''
-            BEGIN TRANSACTION;
-            CREATE TABLE IF NOT EXISTS polls (
-                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                text TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS users (
-                uid INTEGER PRIMARY KEY NOT NULL,
-                name TEXT NOT NULL,
-                is_admin INTEGER NOT NULL DEFAULT 0
-            );
-            INSERT OR REPLACE
-                INTO users (uid, name, is_admin)
-                VALUES (160453507, 'Dmitry Bogdanov', 1);
-            CREATE TABLE IF NOT EXISTS own_votes (
-                poll_id INTEGER NOT NULL REFERENCES polls (id),
-                uid INTEGER NOT NULL REFERENCES users (uid),
-                vote_type INTEGER NOT NULL,
-                t TEXT,
-                PRIMARY KEY (poll_id, uid)
-            );
-            CREATE TABLE IF NOT EXISTS others_votes (
-                poll_id INTEGER NOT NULL REFERENCES polls (id),
-                uid INTEGER NOT NULL REFERENCES users (uid),
-                vote_type INTEGER NOT NULL,
-                t TEXT
-            );
-            CREATE TABLE IF NOT EXISTS messages (
-                poll_id INTEGER NOT NULL REFERENCES polls (id),
-                chat_id INTEGER,
-                msg_id INTEGER,
-                inline_message_id INTEGER
-            );
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER NOT NULL,
-                place TEXT,
-                d TIMESTAMP,
-                t TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS places (
-                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                place TEXT NOT NULL
-            );
-            CREATE TRIGGER IF NOT EXISTS update_own_votes_datetime
-                AFTER UPDATE ON own_votes
-                BEGIN
-                    UPDATE own_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now')
-                    WHERE rowid = NEW.rowid and OLD.vote_type != NEW.vote_type;
-                END;
-            CREATE TRIGGER IF NOT EXISTS update_others_votes_datetime
-                AFTER UPDATE ON others_votes
-                BEGIN
-                    UPDATE others_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE rowid = NEW.rowid;
-                END;
-            CREATE TRIGGER IF NOT EXISTS insert_own_votes_datetime
-                AFTER INSERT ON own_votes
-                BEGIN
-                    UPDATE own_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE rowid = NEW.rowid;
-                END;
-            CREATE TRIGGER IF NOT EXISTS insert_others_votes_datetime
-                AFTER INSERT ON others_votes
-                BEGIN
-                    UPDATE others_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE rowid = NEW.rowid;
-                END;
-            COMMIT TRANSACTION;
-            ''')
+    def upgrade(self):
+        target_version = len(self.__versions)
+        log.info(f'TARGET VERSION: {target_version}')
+        current_version = self.get_version()
+        log.info(f'CURRENT VERSION: {current_version}')
+        for v in range(current_version, target_version):
+            log.info(f'upgrading {v} -> {v + 1}...')
+            self.__versions[v](self)
+            self.set_version(v + 1)
+            log.info('... done')
+        log.info('UPGRADE COMPLETED')
+
+    def upgrade_to_1(self):
+        with self._db as db:
+            db.executescript('''
+                BEGIN TRANSACTION;
+                CREATE TABLE IF NOT EXISTS polls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    text TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS users (
+                    uid INTEGER PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT OR REPLACE
+                    INTO users (uid, name, is_admin)
+                    VALUES (160453507, 'Dmitry Bogdanov', 1);
+                CREATE TABLE IF NOT EXISTS own_votes (
+                    poll_id INTEGER NOT NULL REFERENCES polls (id),
+                    uid INTEGER NOT NULL REFERENCES users (uid),
+                    vote_type INTEGER NOT NULL,
+                    t TEXT,
+                    PRIMARY KEY (poll_id, uid)
+                );
+                CREATE TABLE IF NOT EXISTS others_votes (
+                    poll_id INTEGER NOT NULL REFERENCES polls (id),
+                    uid INTEGER NOT NULL REFERENCES users (uid),
+                    vote_type INTEGER NOT NULL,
+                    t TEXT
+                );
+                CREATE TABLE IF NOT EXISTS messages (
+                    poll_id INTEGER NOT NULL REFERENCES polls (id),
+                    chat_id INTEGER,
+                    msg_id INTEGER,
+                    inline_message_id INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER NOT NULL,
+                    place TEXT,
+                    d TIMESTAMP,
+                    t TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS places (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    place TEXT NOT NULL
+                );
+                CREATE TRIGGER IF NOT EXISTS update_own_votes_datetime
+                    AFTER UPDATE ON own_votes
+                    BEGIN
+                        UPDATE own_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now')
+                        WHERE rowid = NEW.rowid and OLD.vote_type != NEW.vote_type;
+                    END;
+                CREATE TRIGGER IF NOT EXISTS update_others_votes_datetime
+                    AFTER UPDATE ON others_votes
+                    BEGIN
+                        UPDATE others_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE rowid = NEW.rowid;
+                    END;
+                CREATE TRIGGER IF NOT EXISTS insert_own_votes_datetime
+                    AFTER INSERT ON own_votes
+                    BEGIN
+                        UPDATE own_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE rowid = NEW.rowid;
+                    END;
+                CREATE TRIGGER IF NOT EXISTS insert_others_votes_datetime
+                    AFTER INSERT ON others_votes
+                    BEGIN
+                        UPDATE others_votes SET t = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE rowid = NEW.rowid;
+                    END;
+                COMMIT TRANSACTION;
+                ''')
+
+    __versions = [
+        upgrade_to_1
+    ]
+
+    def get_version(self) -> int:
+        cursor = self._db.cursor()
+        cursor.execute('PRAGMA user_version')
+        return int(cursor.fetchone()[0])
+
+    def set_version(self, version: int):
+        with self._lock, self._db as db:
+            log.info(f'setting version to {version}')
+            db.cursor().execute(f'PRAGMA user_version = {version}')
 
     def insert_poll(self, poll: Poll) -> PollId:
         log.info(f'Saving poll {poll}')
@@ -169,10 +198,10 @@ class Storage:
         places = {p[0]: p[1] for p in c.fetchall()}
         return places
 
-    def remove_place(self, id: int):
+    def remove_place(self, place_id: int):
         with self._db as db:
             cursor = db.cursor()
-            cursor.execute('DELETE FROM places WHERE id = :id', {'id': id})
+            cursor.execute('DELETE FROM places WHERE id = :id', {'id': place_id})
 
     def vote(self, poll_id: PollId, user: User, opt: OPTION):
         uid = user.id
