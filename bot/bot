@@ -266,19 +266,21 @@ def handle_add_place(update: Update, context: CallbackContext):
 
 
 def main():
-    logging.basicConfig(level=logging.DEBUG,
-                        format='[%(asctime)s %(filename)s:%(lineno)d:%(funcName)s %(name)s] %(levelname)s: %(message)s')
-
     locale.setlocale(locale.LC_TIME, "ru_RU.UTF-8")
 
     parser = ArgumentParser()
     parser.add_argument('--proxy', type=str)
     parser.add_argument('--db', type=str, required=True)
+    parser.add_argument('-v', '--verbose', action='store_true')
     token_args = parser.add_mutually_exclusive_group(required=True)
     token_args.add_argument('--token_file', type=FileType('r'))
     token_args.add_argument('--token', type=str)
 
     args = parser.parse_args()
+
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=log_level,
+                        format='[%(asctime)s %(filename)s:%(lineno)d:%(funcName)s %(name)s] %(levelname)s: %(message)s')
 
     token = args.token_file.readline().rstrip() if args.token_file is not None else args.token
 
