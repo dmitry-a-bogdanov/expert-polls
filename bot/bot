@@ -16,8 +16,9 @@ from storage import Storage
 
 log = logging.getLogger(__name__)
 
+DMITRY_BOGDANOV = 160453507  # type: int
 
-DMITRY_BOGDDANOV = 160453507  # type: int
+global storage
 
 
 class STATE:
@@ -29,7 +30,6 @@ class STATE:
 def actualize_users(handler):
     @wraps(handler)
     def wrapped(update: Update, context: CallbackContext):
-        storage = Conf.storage()
         storage.upsert_user(update.effective_user)
         return handler(update, context)
 
@@ -40,7 +40,7 @@ def admins_only(handler):
     @wraps(handler)
     def wrapped(update: Update, context: CallbackContext):
         user = update.effective_user  # type: User
-        if user.id != DMITRY_BOGDDANOV:
+        if user.id != DMITRY_BOGDANOV:
             chat = update.effective_chat  # type: Chat
             context.bot.send_message(chat_id=chat.id, text='You are not my master')
             return ConversationHandler.END
@@ -54,7 +54,6 @@ def admins_only(handler):
 @admins_only
 def handle_start(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} started conversation')
-    storage = Conf.storage()
 
     storage.start_sessions(update.effective_user)
 
@@ -71,19 +70,18 @@ def handle_start(update: Update, context: CallbackContext):
 @admins_only
 def handle_place(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} sent place')
-    storage = Conf.storage()
     msg = update.message  # type: Message
     place = msg.text_markdown
     storage.set_place_in_session(update.effective_user, place)
 
     today = datetime.date.today()
     keyboard = []  # type: List[List[str]]
-    COLUMNS = 2
-    ROWS = 4
-    for i in range(ROWS):
+    columns = 2
+    rows = 4
+    for i in range(rows):
         keyboard.append([])
-        for j in range(COLUMNS):
-            day = today + datetime.timedelta(days=COLUMNS * i + j)
+        for j in range(columns):
+            day = today + datetime.timedelta(days=columns * i + j)
             keyboard[i].append(day.strftime('%d.%m (%A)'))
     markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
 
@@ -106,7 +104,6 @@ def handle_date(update: Update, context: CallbackContext):
     if date < today:
         date = date.replace(today.year + 1)
 
-    storage = Conf.storage()
     storage.set_date_in_session(update.effective_user, date)
 
     markup = ReplyKeyboardMarkup(keyboard=[["11:00", "11:11", "19:00", "19:05"]], one_time_keyboard=True,
@@ -121,7 +118,7 @@ def handle_date(update: Update, context: CallbackContext):
 @admins_only
 def list_places(update: Update, context: CallbackContext):
     log.info(f'asked for list places')
-    places = Conf.storage().select_places()
+    places = storage.select_places()
     text = '\n'.join([f'{p[0]}) {p[1]}' for p in places.items()])
     update.message.reply_markdown(text)
     return None
@@ -133,7 +130,7 @@ def remove_place(update: Update, context: CallbackContext):
     message = update.message  # type: Message
     command = message.entities[0]  # type: MessageEntity
     place_id = int(message.text[command.offset + command.length + 1:])
-    Conf.storage().remove_place(place_id)
+    storage.remove_place(place_id)
     return None
 
 
@@ -151,7 +148,6 @@ def create_poll(update: Update, context: CallbackContext):
     msg = update.message  # type: Message
     command_entity = msg.entities[0]  # type: MessageEntity
     text = msg.text_markdown[command_entity.offset + command_entity.length + 1:]
-    storage = Conf.storage()
     poll_id = storage.insert_poll(Poll(poll_text(text)))
     send_saved_poll(context.bot, update.message.chat.id, poll_id)
     return ConversationHandler.END
@@ -165,7 +161,6 @@ def handle_time(update: Update, context: CallbackContext):
     time_str = update.message.text  # type: str
     time = datetime.datetime.strptime(time_str, '%H:%M').time()
 
-    storage = Conf.storage()
     storage.set_time_in_session(update.effective_user, time)
 
     (place, date, time) = storage.get_session(update.effective_user)
@@ -179,7 +174,6 @@ def handle_time(update: Update, context: CallbackContext):
 
 
 def send_saved_poll(bot: Bot, chat_id: int, poll_id: PollId):
-    storage = Conf.storage()
     poll = storage.select_poll(poll_id=poll_id)
     sent_message = bot.send_message(chat_id=chat_id,
                                     text=poll.build_text(),
@@ -205,7 +199,6 @@ def update_poll_message(bot: Bot, poll: PollExt, msg: MessageId):
 
 
 def update_poll_messages(bot: Bot, poll_id: PollId):
-    storage = Conf.storage()
     messages = storage.select_messages(poll_id)
     poll = storage.select_poll(poll_id)
     for msg in messages:
@@ -224,8 +217,6 @@ def handle_vote(update: Update, context: CallbackContext):
 
     log.info(f'user {update.effective_user} vote for {option} in poll {poll_id}')
 
-    storage = Conf.storage()
-
     storage.vote(poll_id, update.effective_user, option)
 
     update_poll_messages(context.bot, poll_id)
@@ -237,7 +228,7 @@ def handle_vote(update: Update, context: CallbackContext):
 def handle_inline_query(update: Update, context: CallbackContext):
     query = update.inline_query  # type: InlineQuery
     poll_id = int(query.query)
-    poll_ext = Conf.storage().select_poll(poll_id)
+    poll_ext = storage.select_poll(poll_id)
     bot = context.bot  # type: Bot
     bot.answer_inline_query(cache_time=0,
                             inline_query_id=query.id,
@@ -254,11 +245,11 @@ def handle_inline_query(update: Update, context: CallbackContext):
 
 
 @actualize_users
-def handle_choosen_inline_query(update: Update, context: CallbackContext):
+def handle_chosen_inline_query(update: Update, context: CallbackContext):
     query = update.chosen_inline_result  # type: ChosenInlineResult
     poll_id = int(query.query)
     message_id = MessageId(inline_message_id=query.inline_message_id)
-    Conf.storage().insert_message(poll_id, message_id)
+    storage.insert_message(poll_id, message_id)
     return None
 
 
@@ -269,27 +260,9 @@ def handle_add_place(update: Update, context: CallbackContext):
     msg = update.message  # type: Message
     command = msg.entities[0]  # type: MessageEntity
     place = msg.text[(command.length + command.offset + 1):]
-    Conf.storage().insert_place(place)
+    storage.insert_place(place)
 
     return None
-
-
-class Conf:
-    _db = None
-    _connection = None
-    _storage = None
-
-    @classmethod
-    def init(cls, db_path: str):
-        cls._db = db_path
-        cls._connection = sqlite3.connect(cls._db,
-                                          detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
-                                          check_same_thread=False)
-        cls._storage = Storage(cls._connection)
-
-    @classmethod
-    def storage(cls) -> Storage:
-        return cls._storage
 
 
 def main():
@@ -309,7 +282,11 @@ def main():
 
     token = args.token_file.readline().rstrip() if args.token_file is not None else args.token
 
-    Conf.init(args.db)
+    connection = sqlite3.connect(args.db,
+                                 detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+                                 check_same_thread=False)
+    global storage
+    storage = Storage(connection)
 
     request = telegram.utils.request.Request(proxy_url=args.proxy, con_pool_size=8)
 
@@ -336,7 +313,7 @@ def main():
         callback=handle_vote
     ))
     dispatcher.add_handler(InlineQueryHandler(callback=handle_inline_query))
-    dispatcher.add_handler(ChosenInlineResultHandler(callback=handle_choosen_inline_query))
+    dispatcher.add_handler(ChosenInlineResultHandler(callback=handle_chosen_inline_query))
 
     updater.start_polling(timeout=60)
     updater.idle()
