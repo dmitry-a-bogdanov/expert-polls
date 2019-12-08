@@ -13,7 +13,7 @@ class Storage:
         self._db = connection  # type: sqlite3.Connection
         self.upgrade()
 
-    def upgrade(self):
+    def upgrade(self) -> None:
         target_version = len(self.__versions)
         log.info(f'TARGET VERSION: {target_version}')
         current_version = self.get_version()
@@ -25,7 +25,7 @@ class Storage:
             log.info('... done')
         log.info('UPGRADE COMPLETED')
 
-    def upgrade_to_1(self):
+    def upgrade_to_1(self) -> None:
         with self._db as db:
             db.executescript('''
                 BEGIN TRANSACTION;
@@ -103,7 +103,7 @@ class Storage:
         cursor.execute('PRAGMA user_version')
         return int(cursor.fetchone()[0])
 
-    def set_version(self, version: int):
+    def set_version(self, version: int) -> None:
         with self._lock, self._db as db:
             log.info(f'setting version to {version}')
             db.cursor().execute(f'PRAGMA user_version = {version}')
@@ -127,7 +127,7 @@ class Storage:
         votes_cons = list(filter(lambda x: not x.is_pro(), votes))
         return PollExt(poll_id=poll_id, votes_pro=votes_pro, votes_cons=votes_cons, text=text)
 
-    def insert_message(self, poll: PollId, message_id: MessageId):
+    def insert_message(self, poll: PollId, message_id: MessageId) -> None:
         log.info(f'saving message {message_id} for poll {poll}')
         with self._lock, self._db as db:
             cursor = db.cursor()
@@ -142,7 +142,7 @@ class Storage:
                   {'poll_id': poll_id})
         return list(map(lambda x: MessageId(chat_id=x[0], message_id=x[1], inline_message_id=x[2]), c.fetchall()))
 
-    def save_user(self, uid: int, name: str):
+    def save_user(self, uid: int, name: str) -> None:
         log.info(f'saving user {name} (uid={uid})')
         with self._lock, self._db as db:
             cursor = db.cursor()
@@ -151,12 +151,12 @@ class Storage:
                 'name': name
             })
 
-    def start_sessions(self, user: User):
+    def start_sessions(self, user: User) -> None:
         with self._lock, self._db as db:
             cursor = db.cursor()
             cursor.execute('INSERT OR REPLACE INTO sessions (id) VALUES (:uid)', {'uid': user.id})
 
-    def set_place_in_session(self, user: User, place: str):
+    def set_place_in_session(self, user: User, place: str) -> None:
         with self._lock, self._db as db:
             cursor = db.cursor()
             cursor.execute('UPDATE sessions SET place = :place WHERE id = :uid', {
@@ -164,7 +164,7 @@ class Storage:
                 'uid': user.id
             })
 
-    def set_date_in_session(self, user: User, date: datetime.date):
+    def set_date_in_session(self, user: User, date: datetime.date) -> None:
         fake_time = datetime.datetime.now().time()
         with self._lock, self._db as db:
             cursor = db.cursor()
@@ -173,7 +173,7 @@ class Storage:
                 'uid': user.id
             })
 
-    def set_time_in_session(self, user: User, time: datetime.time):
+    def set_time_in_session(self, user: User, time: datetime.time) -> None:
         fake_date = datetime.datetime.now().date()
         with self._lock, self._db as db:
             cursor = db.cursor()
@@ -187,7 +187,7 @@ class Storage:
         r = c.fetchone()
         return r[0], r[1].date(), r[2].time()
 
-    def insert_place(self, place: str):
+    def insert_place(self, place: str) -> None:
         with self._lock, self._db as db:  # type: sqlite3.Connection
             cursor = db.cursor()
             cursor.execute('INSERT OR IGNORE INTO places (place) VALUES (?)', [place])
@@ -198,12 +198,12 @@ class Storage:
         places = {p[0]: p[1] for p in c.fetchall()}
         return places
 
-    def remove_place(self, place_id: int):
+    def remove_place(self, place_id: int) -> None:
         with self._db as db:
             cursor = db.cursor()
             cursor.execute('DELETE FROM places WHERE id = :id', {'id': place_id})
 
-    def vote(self, poll_id: PollId, user: User, opt: OPTION):
+    def vote(self, poll_id: PollId, user: User, opt: OPTION) -> None:
         uid = user.id
         with self._lock, self._db as db:  # type: sqlite3.Connection
             cursor = db.cursor()
@@ -226,11 +226,8 @@ class Storage:
                 log.error(f'Unknown option: {opt}. poll: {poll_id}, user: {user}', opt, poll_id, user)
                 raise ValueError('Unknown option')
 
-    def _execute(self, request: str, **kwargs):
-        self._db.execute(request, kwargs)
-
     @staticmethod
-    def __insert_own_vote_in_tx(cursor: sqlite3.Cursor, poll_id: PollId, uid: int, vote_type: VoteType):
+    def __insert_own_vote_in_tx(cursor: sqlite3.Cursor, poll_id: PollId, uid: int, vote_type: VoteType) -> None:
         cursor.execute('''
             INSERT OR IGNORE INTO own_votes (poll_id, uid, vote_type)
             VALUES (:poll_id, :uid, :vote_type)
@@ -264,7 +261,7 @@ class Storage:
             votes.append(Vote(uid=uid, name=name, vote_type=vote_type))
         return votes
 
-    def upsert_user(self, user: User):
+    def upsert_user(self, user: User) -> None:
         log.info(f'updating user uid={user.id}, name={user.name}')
         with self._lock, self._db as db:
             db.execute('''
