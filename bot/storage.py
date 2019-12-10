@@ -228,15 +228,15 @@ class Storage:
 
     @staticmethod
     def __insert_own_vote_in_tx(cursor: sqlite3.Cursor, poll_id: PollId, uid: int, vote_type: VoteType) -> None:
-        cursor.execute('''
-            INSERT OR IGNORE INTO own_votes (poll_id, uid, vote_type)
-            VALUES (:poll_id, :uid, :vote_type)
-            ''', {'poll_id': poll_id, 'uid': uid, 'vote_type': vote_type})
-        cursor.execute('''
-            UPDATE own_votes
-            SET vote_type = :vote_type
-            WHERE poll_id = :poll_id AND uid = :uid
-            ''', {'poll_id': poll_id, 'uid': uid, 'vote_type': vote_type})
+        # remove undo previous vote if the user voted for this
+        cursor.execute('DELETE FROM own_votes WHERE poll_id = :poll_id AND uid = :uid AND vote_type = :vote_type',
+                       {'poll_id': poll_id, 'uid': uid, 'vote_type': vote_type})
+        if cursor.rowcount == 0:
+            # user does not voted for this option before. add or replace vote.
+            cursor.execute('''
+                INSERT OR REPLACE INTO own_votes (poll_id, uid, vote_type)
+                VALUES (:poll_id, :uid, :vote_type)
+                ''', {'poll_id': poll_id, 'uid': uid, 'vote_type': vote_type})
 
     def select_votes(self, poll_id: PollId) -> List[Vote]:
         c = self._db.cursor()
