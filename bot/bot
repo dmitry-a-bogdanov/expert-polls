@@ -6,15 +6,16 @@ import sqlite3
 from argparse import ArgumentParser, FileType
 from functools import wraps
 
-import telegram.utils
-import telegram.utils.request
+import telegram.request
 from telegram.ext import *
-from telegram.ext.dispatcher import run_async
+import telegram.ext.filters
 
 from bot_types import *
 from storage import Storage
 
 log = logging.getLogger(__name__)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+logging.captureWarnings(True)
 
 DMITRY_BOGDANOV = 160453507  # type: int
 
@@ -52,7 +53,7 @@ def admins_only(handler):
 
 @actualize_users
 @admins_only
-def handle_start(update: Update, context: CallbackContext):
+async def handle_start(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} started conversation')
 
     storage.start_sessions(update.effective_user)
@@ -61,14 +62,14 @@ def handle_start(update: Update, context: CallbackContext):
     keyboard = [[p] for p in places.values()]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
 
-    update.message.reply_markdown('Что? - и так понятно. Где?', reply_markup=reply_markup)
+    await update.message.reply_markdown('Что? - и так понятно. Где?', reply_markup=reply_markup)
 
     return STATE.WAIT_FOR_PLACE
 
 
 @actualize_users
 @admins_only
-def handle_place(update: Update, context: CallbackContext):
+async def handle_place(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} sent place')
     msg = update.message  # type: Message
     place = msg.text_markdown
@@ -85,14 +86,14 @@ def handle_place(update: Update, context: CallbackContext):
             keyboard[i].append(day.strftime('%d.%m (%A)'))
     markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
 
-    update.message.reply_markdown('Когда?', reply_markup=markup)
+    await update.message.reply_markdown('Когда?', reply_markup=markup)
 
     return STATE.WAIT_FOR_DATE
 
 
 @actualize_users
 @admins_only
-def handle_date(update: Update, context: CallbackContext):
+async def handle_date(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} sent date')
 
     today = datetime.date.today()
@@ -109,24 +110,24 @@ def handle_date(update: Update, context: CallbackContext):
     markup = ReplyKeyboardMarkup(keyboard=[["11:00", "11:11", "19:00", "19:05"]], one_time_keyboard=True,
                                  resize_keyboard=True)
 
-    update.message.reply_markdown('А точнее?', reply_markup=markup)
+    await update.message.reply_markdown('А точнее?', reply_markup=markup)
 
     return STATE.WAIT_FOR_TIME
 
 
 @actualize_users
 @admins_only
-def list_places(update: Update, context: CallbackContext):
+async def list_places(update: Update, context: CallbackContext):
     log.info(f'asked for list places')
     places = storage.select_places()
-    text = '\n'.join([f'{p[0]}) {p[1]}' for p in places.items()])
-    update.message.reply_markdown(text)
+    text = '<No places are saved>'  if len(places) == 0 else '\n'.join([f'{p[0]}) {p[1]}' for p in places.items()])
+    await update.message.reply_markdown(text)
     return None
 
 
 @actualize_users
 @admins_only
-def remove_place(update: Update, context: CallbackContext):
+async def remove_place(update: Update, context: CallbackContext):
     message = update.message  # type: Message
     command = message.entities[0]  # type: MessageEntity
     place_id = int(message.text[command.offset + command.length + 1:])
@@ -144,18 +145,18 @@ def poll_header(place: str, date: datetime.date, time: datetime.time) -> str:
 
 @actualize_users
 @admins_only
-def create_poll(update: Update, context: CallbackContext):
+async def create_poll(update: Update, context: CallbackContext):
     msg = update.message  # type: Message
     command_entity = msg.entities[0]  # type: MessageEntity
     text = msg.text_markdown[command_entity.offset + command_entity.length + 1:]
     poll_id = storage.insert_poll(Poll(poll_text(text)))
-    send_saved_poll(context.bot, update.message.chat.id, poll_id)
+    await send_saved_poll(context.bot, update.message.chat.id, poll_id)
     return ConversationHandler.END
 
 
 @actualize_users
 @admins_only
-def handle_time(update: Update, context: CallbackContext):
+async def handle_time(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} sent time')
 
     time_str = update.message.text  # type: str
@@ -168,45 +169,49 @@ def handle_time(update: Update, context: CallbackContext):
     text = poll_text(poll_header(place, date, time))
     poll_id = storage.insert_poll(Poll(text))
 
-    send_saved_poll(context.bot, update.message.chat.id, poll_id)
+    await send_saved_poll(context.bot, update.message.chat.id, poll_id)
 
     return ConversationHandler.END
 
 
-def send_saved_poll(bot: Bot, chat_id: int, poll_id: PollId):
+async def send_saved_poll(bot: Bot, chat_id: int, poll_id: PollId):
     poll = storage.select_poll(poll_id=poll_id)
-    sent_message = bot.send_message(chat_id=chat_id,
-                                    text=poll.build_text(),
-                                    parse_mode=ParseMode.MARKDOWN,
-                                    reply_markup=poll.build_markup())
-    bot.send_message(chat_id=chat_id, text='Готово. Ещё? press /newpoll', reply_markup=ReplyKeyboardRemove())
+    sent_message = await bot.send_message(chat_id=chat_id,
+                                          text=poll.build_text(),
+                                          parse_mode=constants.ParseMode.MARKDOWN,
+                                          reply_markup=poll.build_markup(),
+                                          )
+    await bot.send_message(chat_id=chat_id, text='Готово. Ещё? press /newpoll', reply_markup=ReplyKeyboardRemove())
     sent_message_id = MessageId(chat_id=sent_message.chat_id, message_id=sent_message.message_id)
     storage.insert_message(poll_id, sent_message_id)
 
 
-@run_async
-def update_poll_message(bot: Bot, poll: PollExt, msg: MessageId):
+async def update_poll_message(bot: Bot, poll: PollExt, msg: MessageId):
     try:
-        bot.edit_message_text(chat_id=msg.chat_id,
-                              message_id=msg.message_id,
-                              inline_message_id=msg.inline_message_id,
-                              text=poll.build_text(),
-                              parse_mode=ParseMode.MARKDOWN,
-                              reply_markup=poll.build_markup()
-                              )
+        log.debug(f'Updating message {msg} for poll {poll}...')
+        await bot.edit_message_text(chat_id=msg.chat_id,
+                                    message_id=msg.message_id,
+                                    inline_message_id=msg.inline_message_id,
+                                    text=poll.build_text(),
+                                    parse_mode=constants.ParseMode.MARKDOWN,
+                                    reply_markup=poll.build_markup(),
+                                    )
+        log.debug(f'Up-to-date')
     except Exception as e:
         log.error(f'Cannot edit: {e}')
 
 
-def update_poll_messages(bot: Bot, poll_id: PollId):
+async def update_poll_messages(bot: Bot, poll_id: PollId):
     messages = storage.select_messages(poll_id)
     poll = storage.select_poll(poll_id)
+    log.debug(f'About to update {len(messages)} messages')
     for msg in messages:
-        update_poll_message(bot, poll, msg)
+        await update_poll_message(bot, poll, msg)
 
 
 @actualize_users
-def handle_vote(update: Update, context: CallbackContext):
+async def handle_vote(update: Update, context: CallbackContext):
+    log.debug("handling vote")
     query = update.callback_query  # type: CallbackQuery
 
     def parse_vote_data(data: str):
@@ -219,33 +224,35 @@ def handle_vote(update: Update, context: CallbackContext):
 
     storage.vote(poll_id, update.effective_user, option)
 
-    update_poll_messages(context.bot, poll_id)
-    query.answer()
+    await update_poll_messages(context.bot, poll_id)
+    await query.answer()
+    log.debug("vote handled")
     return None
 
 
 @actualize_users
-def handle_inline_query(update: Update, context: CallbackContext):
+async def handle_inline_query(update: Update, context: CallbackContext):
     query = update.inline_query  # type: InlineQuery
     poll_id = int(query.query)
     poll_ext = storage.select_poll(poll_id)
     bot = context.bot  # type: Bot
-    bot.answer_inline_query(cache_time=0,
-                            inline_query_id=query.id,
-                            results=[InlineQueryResultArticle(
-                                id=poll_id,
-                                title=poll_ext.text,
-                                input_message_content=InputTextMessageContent(
-                                    message_text=poll_ext.build_text(),
-                                    parse_mode=ParseMode.MARKDOWN
-                                ),
-                                reply_markup=poll_ext.build_markup()
-                            )])
+    await bot.answer_inline_query(cache_time=0,
+                                  inline_query_id=query.id,
+                                  results=[InlineQueryResultArticle(
+                                      id=poll_id,
+                                      title=poll_ext.text,
+                                      input_message_content=InputTextMessageContent(
+                                          message_text=poll_ext.build_text(),
+                                          parse_mode=constants.ParseMode.MARKDOWN,
+                                      ),
+                                      reply_markup=poll_ext.build_markup()
+                                  )],
+                                  )
     return None
 
 
 @actualize_users
-def handle_chosen_inline_query(update: Update, context: CallbackContext):
+async def handle_chosen_inline_query(update: Update, context: CallbackContext):
     query = update.chosen_inline_result  # type: ChosenInlineResult
     poll_id = int(query.query)
     message_id = MessageId(inline_message_id=query.inline_message_id)
@@ -255,7 +262,7 @@ def handle_chosen_inline_query(update: Update, context: CallbackContext):
 
 @actualize_users
 @admins_only
-def handle_add_place(update: Update, context: CallbackContext):
+async def handle_add_place(update: Update, context: CallbackContext):
     log.info(f'Adding place: {update.message}')
     msg = update.message  # type: Message
     command = msg.entities[0]  # type: MessageEntity
@@ -290,13 +297,13 @@ def main():
     global storage
     storage = Storage(connection)
 
-    request = telegram.utils.request.Request(proxy_url=args.proxy, con_pool_size=8)
+    req = telegram.request.HTTPXRequest(proxy_url=args.proxy, connection_pool_size=8)
+    app = (Application.builder()
+           .request(req)
+           .token(token)
+           .build())
 
-    bot = Bot(token=token, request=request)
-    updater = Updater(bot=bot, use_context=True)
-
-    dispatcher = updater.dispatcher
-    dispatcher.add_handler(ConversationHandler(
+    app.add_handler(ConversationHandler(
         entry_points=[
             CommandHandler(['start', 'reset', 'newpoll', 'new_poll'], handle_start),
             CommandHandler(['add_place'], handle_add_place),
@@ -305,20 +312,19 @@ def main():
             CommandHandler(['create_poll'], create_poll)
         ],
         states={
-            STATE.WAIT_FOR_PLACE: [MessageHandler(Filters.text, handle_place)],
-            STATE.WAIT_FOR_DATE: [MessageHandler(Filters.text, handle_date)],
-            STATE.WAIT_FOR_TIME: [MessageHandler(Filters.text, handle_time)]
+            STATE.WAIT_FOR_PLACE: [MessageHandler(telegram.ext.filters.TEXT, handle_place)],
+            STATE.WAIT_FOR_DATE: [MessageHandler(telegram.ext.filters.TEXT, handle_date)],
+            STATE.WAIT_FOR_TIME: [MessageHandler(telegram.ext.filters.TEXT, handle_time)]
         },
         fallbacks=[]
     ))
-    dispatcher.add_handler(CallbackQueryHandler(
+    app.add_handler(CallbackQueryHandler(
         callback=handle_vote
     ))
-    dispatcher.add_handler(InlineQueryHandler(callback=handle_inline_query))
-    dispatcher.add_handler(ChosenInlineResultHandler(callback=handle_chosen_inline_query))
+    app.add_handler(InlineQueryHandler(callback=handle_inline_query))
+    app.add_handler(ChosenInlineResultHandler(callback=handle_chosen_inline_query))
 
-    updater.start_polling(timeout=60)
-    updater.idle()
+    app.run_polling(allowed_updates=Update.ALL_TYPES, timeout=60)
 
 
 if __name__ == '__main__':
