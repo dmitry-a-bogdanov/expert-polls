@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+source /root/venv/bin/activate
+exec /root/bot "$@"

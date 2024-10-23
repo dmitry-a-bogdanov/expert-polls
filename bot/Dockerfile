@@ -1,17 +1,19 @@
-FROM debian:buster-slim
+FROM ubuntu:noble-20241011
+
+VOLUME /var/run/expert
 
 RUN apt-get update && \
-    apt-get --no-install-recommends install -y locales python3 python3-pip python3-setuptools python3-socks && \
+    apt-get --no-install-recommends install -y locales python3 python3-venv python3-pip && \
     apt-get clean && \
-    (echo "388" | dpkg-reconfigure -plow locales) && \
-    pip3 install --no-cache-dir python-telegram-bot && \
-    apt-get purge -y python3-pip python3-setuptools && \
-    apt-get autoremove -y --purge
+    localedef -i ru_RU -c -f UTF-8 -A /usr/share/locale/locale.alias ru_RU.UTF-8
 
-COPY bot *.py /root/
+WORKDIR /root/
+RUN python3 -m venv ./venv
+COPY requirements.txt /root/
+RUN . /root/venv/bin/activate && \
+    pip3 install -r requirements.txt
 
-RUN chmod 500 /root/bot
+COPY bot run *.py /root/
+RUN chmod 500 /root/bot /root/run
 
-VOLUME /persistent/
-
-ENTRYPOINT ["/root/bot"]
+ENTRYPOINT ["/root/run"]
