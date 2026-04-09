@@ -3,6 +3,7 @@ from enum import Enum
 from typing import *
 
 from telegram import *
+from telegram.helpers import escape_markdown
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class Vote:
         return self._vote_type in (VoteType.PLUS_ONE, VoteType.PRO)
 
     def format_user(self):
-        return f'[{self._name}](tg://user?id={self._uid})'
+        return f'[{escape_markdown(self._name)}](tg://user?id={self._uid})'
 
     def show(self):
         if self._vote_type == VoteType.PLUS_ONE:
