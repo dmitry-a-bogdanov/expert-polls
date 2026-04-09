@@ -89,11 +89,14 @@ class Emoji:
     TOILET = '\U0001F6BD'
     PLUS = '\U00002795'
     MINUS = '\U00002796'
+    UP = '\U0001F44D'
+    DOWN = '\U0001F44E'
+
 
 
 class OPTION(Enum):
-    ME_TOO = ('me_too', f'{Emoji.PLUS}')
-    ME_NOT = ('me_not', f'{Emoji.MINUS}')
+    ME_TOO = ('me_too', f'{Emoji.UP}')
+    ME_NOT = ('me_not', f'{Emoji.DOWN}')
     PLUS_ONE = ('plus_one', f'{Emoji.BOAR} человечек подскочит')
     MINUS_ONE = ('minus_one', f'{Emoji.TOILET} человечек слился')
 
