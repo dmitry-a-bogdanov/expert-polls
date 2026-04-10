@@ -2,8 +2,9 @@ import logging
 from enum import Enum
 from typing import *
 
+import telegram
 from telegram import *
-from telegram.helpers import escape_markdown
+from telegram.helpers import escape_markdown, mention_markdown
 
 log = logging.getLogger(__name__)
 
@@ -62,11 +63,11 @@ class Vote:
         return self._vote_type in (VoteType.PLUS_ONE, VoteType.PRO)
 
     def format_user(self):
-        return f'[{escape_markdown(self._name)}](tg://user?id={self._uid})'
+        return mention_markdown(user_id=self._uid, name=self._name, version=2)
 
     def show(self):
         if self._vote_type == VoteType.PLUS_ONE:
-            return f'+1 (от {self.format_user()})'
+            return f'\+1 \(от {self.format_user()}\)'
         else:
             return self.format_user()
 
@@ -161,7 +162,7 @@ class PollExt(Poll):
 
         def total_str(votes: List):
             n = len(votes)
-            return f'({n})' if n > 0 else ''
+            return escape_markdown(f'({n})' if n > 0 else '', version=2)
 
         text = str(self.text)
         text += '\n\n'

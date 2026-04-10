@@ -72,7 +72,7 @@ async def handle_start(update: Update, context: CallbackContext):
 async def handle_place(update: Update, context: CallbackContext):
     log.info(f'user {update.effective_user} sent place')
     msg = update.message  # type: Message
-    place = msg.text_markdown
+    place = msg.text_markdown_v2
     storage.set_place_in_session(update.effective_user, place)
 
     today = datetime.date.today()
@@ -138,7 +138,6 @@ async def remove_place(update: Update, context: CallbackContext):
 def poll_text(header: str) -> str:
     return f'{header}\n\nОбкашляем вопросики?'
 
-
 def poll_header(place: str, date: datetime.date, time: datetime.time) -> str:
     return f'{date.strftime("%d %B %Y, %A")}. {time.strftime("%H:%M")}. {place}'
 
@@ -148,7 +147,7 @@ def poll_header(place: str, date: datetime.date, time: datetime.time) -> str:
 async def create_poll(update: Update, context: CallbackContext):
     msg = update.message  # type: Message
     command_entity = msg.entities[0]  # type: MessageEntity
-    text = msg.text_markdown[command_entity.offset + command_entity.length + 1:]
+    text = msg.text_markdown_v2[command_entity.offset + command_entity.length + 1:]
     poll_id = storage.insert_poll(Poll(poll_text(text)))
     await send_saved_poll(context.bot, update.message.chat.id, poll_id)
     return ConversationHandler.END
@@ -178,7 +177,7 @@ async def send_saved_poll(bot: Bot, chat_id: int, poll_id: PollId):
     poll = storage.select_poll(poll_id=poll_id)
     sent_message = await bot.send_message(chat_id=chat_id,
                                           text=poll.build_text(),
-                                          parse_mode=constants.ParseMode.MARKDOWN,
+                                          parse_mode=constants.ParseMode.MARKDOWN_V2,
                                           reply_markup=poll.build_markup(),
                                           )
     await bot.send_message(chat_id=chat_id, text='Готово. Ещё? press /newpoll', reply_markup=ReplyKeyboardRemove())
@@ -193,7 +192,7 @@ async def update_poll_message(bot: Bot, poll: PollExt, msg: MessageId):
                                     message_id=msg.message_id,
                                     inline_message_id=msg.inline_message_id,
                                     text=poll.build_text(),
-                                    parse_mode=constants.ParseMode.MARKDOWN,
+                                    parse_mode=constants.ParseMode.MARKDOWN_V2,
                                     reply_markup=poll.build_markup(),
                                     )
         log.debug(f'Up-to-date')
