@@ -62,7 +62,7 @@ async def handle_start(update: Update, context: CallbackContext):
     keyboard = [[p] for p in places.values()]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
 
-    await update.message.reply_markdown('Что? - и так понятно. Где?', reply_markup=reply_markup)
+    await update.message.reply_markdown_v2('Что? - и так понятно. Где?', reply_markup=reply_markup)
 
     return STATE.WAIT_FOR_PLACE
 
@@ -86,7 +86,7 @@ async def handle_place(update: Update, context: CallbackContext):
             keyboard[i].append(day.strftime('%d.%m (%A)'))
     markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
 
-    await update.message.reply_markdown('Когда?', reply_markup=markup)
+    await update.message.reply_markdown_v2('Когда?', reply_markup=markup)
 
     return STATE.WAIT_FOR_DATE
 
@@ -110,7 +110,7 @@ async def handle_date(update: Update, context: CallbackContext):
     markup = ReplyKeyboardMarkup(keyboard=[["11:00", "11:11", "19:00", "19:05"]], one_time_keyboard=True,
                                  resize_keyboard=True)
 
-    await update.message.reply_markdown('А точнее?', reply_markup=markup)
+    await update.message.reply_markdown_v2('А точнее?', reply_markup=markup)
 
     return STATE.WAIT_FOR_TIME
 
@@ -121,7 +121,7 @@ async def list_places(update: Update, context: CallbackContext):
     log.info(f'asked for list places')
     places = storage.select_places()
     text = '<No places are saved>'  if len(places) == 0 else '\n'.join([f'{p[0]}) {p[1]}' for p in places.items()])
-    await update.message.reply_markdown(text)
+    await update.message.reply_markdown_v2(text)
     return None
 
 
@@ -242,7 +242,7 @@ async def handle_inline_query(update: Update, context: CallbackContext):
                                       title=poll_ext.text,
                                       input_message_content=InputTextMessageContent(
                                           message_text=poll_ext.build_text(),
-                                          parse_mode=constants.ParseMode.MARKDOWN,
+                                          parse_mode=constants.ParseMode.MARKDOWN_V2,
                                       ),
                                       reply_markup=poll_ext.build_markup()
                                   )],
