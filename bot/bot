@@ -224,7 +224,9 @@ async def handle_vote(update: Update, context: CallbackContext):
     storage.vote(poll_id, update.effective_user, option)
 
     await update_poll_messages(context.bot, poll_id)
-    await query.answer()
+    answer_text = None
+    show_alert = None
+    await query.answer(text=answer_text, show_alert=show_alert)
     log.debug("vote handled")
     return None
 
